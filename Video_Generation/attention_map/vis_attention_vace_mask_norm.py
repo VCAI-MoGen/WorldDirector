@@ -32,7 +32,7 @@ fps=16
 root_path = os.path.join(args.root_path, f'{step_idx}')
 
 attention_map_path = os.path.join(root_path, 'control_avg_attn_map.npy')
-attention_map = np.array(attention_map_path)
+attention_map = np.load(attention_map_path)
 video_path = os.path.join(video_dir_path, "src_video.mp4" )
 mask_video_path = os.path.join(video_dir_path, "src_mask.mp4")
 attn_vis_path = os.path.join(root_path, f'vis_with_frame_vace_{text_idices}')
@@ -73,12 +73,21 @@ print(np.sum(mean_attn))
 text_aligned_attn = torch.tensor(mean_attn[:, text_idices]).mean(dim=1)
 
 reshaped_attn = text_aligned_attn.reshape(1 + T // 4, H // 16, W // 16)
+reshaped_attn = F.avg_pool3d(
+    reshaped_attn[None, :, :, :],
+    kernel_size=(1 * 2 + 1,
+                 1 * 2 + 1,
+                 1 * 2 + 1),
+    stride=(1, 1, 1),
+    padding=(1, 1, 1),
+)[0]
 attn_up = F.interpolate(
     reshaped_attn.unsqueeze(0).unsqueeze(0),
     size=(T, H, W),
     mode='trilinear',  # 3D linear interpolation
     align_corners=False
 )[0, 0].cpu().numpy()
+attn_norm = cv2.normalize(attn_up, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
 cap = cv2.VideoCapture(video_path)
 mask_cap = cv2.VideoCapture(mask_video_path)
@@ -89,28 +98,24 @@ mask_writer = imageio.get_writer(mask_from_attn_vis_video_path, fps=fps)
 while True:
     ret, frame = cap.read()
     ret_mask, frame_mask = mask_cap.read()
-    if not ret or frame_idx >= attn_up.shape[0]:
+    if not ret or frame_idx >= attn_norm.shape[0]:
         break
 
     # 원본 프레임 크기 맞추기
     frame_resized = cv2.resize(frame, (W, H))
 
     # 해당 프레임의 attention map
-    attn_frame = attn_up[frame_idx]
+    attn_norm_frame = attn_norm[frame_idx]
 
-    attn_frame[frame_mask[:, :, 0] < 127] = 0
-
-    # Normalize (0~255)
-    attn_norm = cv2.normalize(attn_frame, None, 0, 255, cv2.NORM_MINMAX)
-    attn_norm = attn_norm.astype(np.uint8)
+    attn_norm_frame[frame_mask[:, :, 0] < 127] = 0
 
     # Heatmap 만들기
-    heatmap = cv2.applyColorMap(attn_norm, cv2.COLORMAP_JET)
+    heatmap = cv2.applyColorMap(attn_norm_frame, cv2.COLORMAP_JET)
 
     # Overlay
     overlay = cv2.addWeighted(frame_resized, 0.6, heatmap, 0.4, 0)
 
-    mask_from_attn = (attn_norm > int(mask_threshold * 255)).astype(np.uint8) * 255
+    mask_from_attn = (attn_norm_frame > int(mask_threshold * 255)).astype(np.uint8) * 255
 
     # 저장
     save_path = os.path.join(attn_vis_path, f"{frame_idx:03d}.jpg")
