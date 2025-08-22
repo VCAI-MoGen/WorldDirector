@@ -257,7 +257,31 @@ class WanVace(WanT2V):
 
         return vae.decode(trimed_zs)
 
+    def generate_mask_from_attention(self, video, attention, attn_thresh=0.95, pool_size=1):
+        video = video.to(attention)
+        B, C, T, H, W = video.shape
+        dtype = attention.dtype
+        device = attention.device
 
+        attention = attention.reshape(1 + T // 4, H // 16, W // 16)
+        mask = attention.view((1, 1) + attention.shape)
+        mask = F.avg_pool3d(
+            mask,
+            kernel_size=(pool_size * 2 + 1, pool_size * 2 + 1, pool_size * 2 + 1),
+            stride=(1, 1, 1),
+            padding=(pool_size, pool_size, pool_size),
+        )
+        mask = F.interpolate(mask, size=(T, H, W), mode="trilinear", align_corners=False)
+
+        mask = mask.float().detach().cpu().numpy()
+        import numpy as np
+        attn_thresh = np.quantile(mask, attn_thresh)
+        mask = torch.tensor(mask).to(device=device, dtype=dtype)
+        mask = (mask >= attn_thresh).float()
+
+        masked_video = video * (mask < 0.5) + (mask >= 0.5) * -0.0118
+
+        return masked_video, mask
 
     def generate(self,
                  input_prompt,
@@ -273,7 +297,8 @@ class WanVace(WanT2V):
                  guide_scale=5.0,
                  n_prompt="",
                  seed=-1,
-                 offload_model=True):
+                 offload_model=True,
+                 scene_frames=None):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -334,10 +359,6 @@ class WanVace(WanT2V):
             context_null = self.text_encoder([n_prompt], torch.device('cpu'))
             context = [t.to(self.device) for t in context]
             context_null = [t.to(self.device) for t in context_null]
-        print("wan_vace.py")
-        print(input_prompt)
-        print(len(context))
-        print(context[0].shape)
         tokenizer = self.text_encoder.tokenizer
         tokenized = tokenizer([input_prompt], add_special_tokens=True)
         # tokens = tokenizer.tokenizer.tokenize(input_prompt)
@@ -348,6 +369,8 @@ class WanVace(WanT2V):
         for i, (text, tok) in enumerate(zip([input_prompt], tokens)):
             print(f"Original: {text}")
             print(f"Tokens:   {tok}")
+        human_text_idx = tokens[0].index('▁man')
+        print('human_text_idx:', human_text_idx)
         # vace context encode
         z0 = self.vace_encode_frames(input_frames, input_ref_images, masks=input_masks)
         m0 = self.vace_encode_masks(input_masks, input_ref_images)
@@ -418,7 +441,7 @@ class WanVace(WanT2V):
                 
                 import numpy as np
                 # wan branch dit blocks
-                root_dir = "/data/ckd248/SCVideo/Video_Generation/attention_map/VACE/bicycle3"
+                root_dir = "/data/ckd248/SCVideo/Video_Generation/attention_map/VACE/test_0822"
                 os.makedirs(root_dir, exist_ok=True)
                 step_dir = os.path.join(root_dir, str(idx))
                 os.makedirs(step_dir, exist_ok=True)
@@ -432,6 +455,26 @@ class WanVace(WanT2V):
                 avg_cross_attn_map = sum_cross_attn_map / len(self.model.blocks)
                 attn_map_path = os.path.join(step_dir, 'main_avg_attn_map.npy')
                 np.save(attn_map_path, avg_cross_attn_map.detach().cpu().numpy())
+
+                avg_cross_attn_map = torch.mean(avg_cross_attn_map, dim=0)
+                human_cross_attn_map = avg_cross_attn_map[:, human_text_idx]
+
+                masked_video, human_attention_mask = self.generate_mask_from_attention(torch.stack(input_frames), human_cross_attn_map)
+
+                masked_video_path = os.path.join(step_dir, 'masked_video.mp4')
+                from wan.utils.utils import cache_video
+                cache_video(
+                tensor=masked_video,
+                save_file=masked_video_path,
+                fps=16,
+                nrow=1,
+                normalize=True,
+                value_range=(-1, 1))
+
+                z0_attn = self.vace_encode_frames(masked_video, input_ref_images, masks=human_attention_mask)
+                m0_attn = self.vace_encode_masks(human_attention_mask, input_ref_images)
+                z_attn = self.vace_latent(z0_attn, m0_attn)
+
                 # control branch dit blocks
                 sum_cross_attn_map = None
                 for block_idx, block in enumerate(self.model.vace_blocks):
@@ -457,6 +500,7 @@ class WanVace(WanT2V):
                     return_dict=False,
                     generator=seed_g)[0]
                 latents = [temp_x0.squeeze(0)]
+                z = z_attn
 
             x0 = latents
             if offload_model:

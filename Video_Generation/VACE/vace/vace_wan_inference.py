@@ -178,6 +178,11 @@ def get_parser():
         type=float,
         default=5.0,
         help="Classifier free guidance scale.")
+    parser.add_argument(
+        "--scene_video",
+        type=str,
+        default=None,
+        help="The file of the scene video. Default None.")
     return parser
 
 
@@ -286,6 +291,14 @@ def main(args):
                                                                   [args.src_mask],
                                                                   [None if args.src_ref_images is None else args.src_ref_images.split(',')],
                                                                   args.frame_num, SIZE_CONFIGS[args.size], device)
+    
+    if args.scene_video is not None:
+        scene_video, _, _ = wan_vace.prepare_source([args.scene_video],
+                                                    [args.src_mask],
+                                                    [None if args.src_ref_images is None else args.src_ref_images.split(',')],
+                                                    args.frame_num, SIZE_CONFIGS[args.size], device)
+    else:
+        scene_video = None
 
     logging.info(f"Generating video...")
     video = wan_vace.generate(
@@ -300,7 +313,8 @@ def main(args):
         sampling_steps=args.sample_steps,
         guide_scale=args.sample_guide_scale,
         seed=args.base_seed,
-        offload_model=args.offload_model)
+        offload_model=args.offload_model,
+        scene_frames=scene_video)
 
     ret_data = {}
     if rank == 0:
