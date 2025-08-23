@@ -39,7 +39,7 @@ class GsplatRenderTabState(RenderTabState):
     # LCY
     camera_translation: List[float] = [0.0, 0.0, 0.0]
     camera_quat: List[float] = [1.0, 0.0, 0.0, 0.0]
-    root_path = "/home/ckd248/data/HSI/fitting/data/Custom/data/bicycle3"
+    root_path = "/home/ckd248/data/SCVideo/HSI/fitting/data/Custom/data/bicycle3"
 
 
 class GsplatViewer(Viewer):
@@ -442,7 +442,6 @@ class GsplatViewer(Viewer):
                     # traj_list = np.load(traj_path)
                     traj = np.array(traj_list)
                     traj = np.einsum('nij,nj->ni', R_c2w, traj) + t_c2w
-
                     N = traj.shape[0]
                     colors = np.stack([
                         np.linspace(1.0, 0.0, N),  # R
@@ -511,6 +510,7 @@ class GsplatViewer(Viewer):
 
                     root_path = os.path.join(self.render_tab_state.root_path, 'scene_gs/test')
                     depth1_dir_path = os.path.join(root_path, 'depths_npy')
+                    # depth1_dir_path = os.path.join(self.render_tab_state.root_path, 'scene_gs/depths_npy')
                     depth2_dir_path = os.path.join(root_path, 'depths_vggt_optimized')
                     frame1_path = os.path.join(root_path, 'frames_pure')
                     frame2_path = os.path.join(root_path, 'frames')
@@ -532,9 +532,49 @@ class GsplatViewer(Viewer):
                     rgb1 = np.array([cv2.cvtColor(cv2.imread(os.path.join(frame1_path, f'{i}.png')), cv2.COLOR_BGR2RGB) for i in range(len(os.listdir(frame1_path)))])
                     rgb2 = np.array([cv2.cvtColor(cv2.imread(os.path.join(frame2_path, f'{i}.png')), cv2.COLOR_BGR2RGB) for i in range(len(os.listdir(frame2_path)))])
 
+                    additional_depths = []
+                    additional_rgbs = []
+                    additional_cam_params = []
+
+                    additional_depth = np.load('/data/ckd248/SCVideo/gs_render/tools/gsplat/results/depth/0.npy')[:, :, 0]
+                    additional_rgb = cv2.cvtColor(cv2.imread('/data/ckd248/SCVideo/gs_render/tools/gsplat/results/image/0.png'), cv2.COLOR_BGR2RGB)
+                    additional_cam_param_path = '/data/ckd248/SCVideo/gs_render/tools/gsplat/results/depth/0.json'
+
+                    with open(additional_cam_param_path, 'r') as f:
+                        additional_cam_param = json.load(f)
+
+                    additional_depths.append(additional_depth)
+                    additional_rgbs.append(additional_rgb)
+                    additional_cam_params.append(additional_cam_param)
+                    
+                    additional_depth = np.load('/data/ckd248/SCVideo/gs_render/tools/gsplat/results/depth/1.npy')[:, :, 0]
+                    additional_rgb = cv2.cvtColor(cv2.imread('/data/ckd248/SCVideo/gs_render/tools/gsplat/results/image/1.png'), cv2.COLOR_BGR2RGB)
+                    additional_cam_param_path = '/data/ckd248/SCVideo/gs_render/tools/gsplat/results/depth/1.json'
+
+                    with open(additional_cam_param_path, 'r') as f:
+                        additional_cam_param = json.load(f)
+                    
+                    additional_depths.append(additional_depth)
+                    additional_rgbs.append(additional_rgb)
+                    additional_cam_params.append(additional_cam_param)
+
+                    rgb1 = np.array([])
+                    depth1 = np.array([])
+                    cam_params = []
+
+                    rgb1 = rgb1.tolist()
+                    rgb1 += additional_rgbs
+                    rgb1 = np.array(rgb1)
+
+                    depth1 = depth1.tolist()
+                    depth1 += additional_depths
+                    depth1 = np.array(depth1)
+
+                    cam_params += additional_cam_params
+
                     # ---------------- 시각화 -----------------------
 
-                    for i in range(N):
+                    for i in range(len(cam_params)):
                         # if i != 0 and i != 80:
                         #     continue
                         fx, fy = cam_params[i]['focal']
@@ -560,15 +600,15 @@ class GsplatViewer(Viewer):
                             name=f"pc_world_{i}",
                             points=pc_world,
                             colors=pc_rgb,
-                            point_size=0.001
+                            point_size=0.0005
                         )
-                        
+                        """
                         pc_cam = depth_to_point_cloud(depth2[i], intrinsics)
                         pc_rgb = rgb2[i].reshape(-1, 3)
 
                         # c2w 변환
                         pc_world = apply_c2w(pc_cam, c2w_R, c2w_t)
-                        """
+                        
                         client.scene.add_point_cloud(
                             name=f"pc_world2_{i}",
                             points=pc_world,
@@ -576,7 +616,7 @@ class GsplatViewer(Viewer):
                             point_size=0.001
                         )
                         """
-                        
+                    """
                     indicies_to_show = [0, 26, 42, 80]
                     print(len(mesh_path_list))
                     # indicies_to_show = [i for i in range(len(mesh_path_list))]
@@ -586,9 +626,6 @@ class GsplatViewer(Viewer):
 
                         mesh = trimesh.load_mesh(mesh_path)
 
-                        gs_mesh_path = "/home/ckd248/data/gs_render/tools/SuGaR/output/refined_ply/garden/sugarfine_3Dgs7000_densityestim02_sdfnorm02_level03_decim1000000_normalconsistency01_gaussperface1.ply"
-                        gs_mesh = trimesh.load_mesh(gs_mesh_path)
-
                         c2w = np.eye(4)
                         c2w[:3, :3] = c2w_R
                         c2w[:3, 3] = c2w_t
@@ -597,10 +634,7 @@ class GsplatViewer(Viewer):
                             mesh_path,
                             mesh=mesh
                         )
-                        client.scene.add_mesh_trimesh(
-                            gs_mesh_path,
-                            mesh=gs_mesh
-                        )
+                    """
                     """
                     cam_param_dir_path = os.path.join(self.render_tab_state.root_path, "cam_params_scene")
                     cam_param_path_list = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
@@ -717,7 +751,7 @@ class GsplatViewer(Viewer):
                     client = event.client
                     assert client is not None
 
-                    cam_param_dir_path = os.path.join(self.render_tab_state.root_path, 'cam_params_et')
+                    cam_param_dir_path = os.path.join(self.render_tab_state.root_path, 'While the character moves the camera remains static and pushes in')
                     cam_params_path = [os.path.join(cam_param_dir_path, f'{str(i).zfill(6)}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
                     render_dir_path = os.path.join(self.render_tab_state.root_path, "render_et")
                     os.makedirs(render_dir_path, exist_ok=True)
@@ -749,7 +783,7 @@ class GsplatViewer(Viewer):
 
                         R = R_c2w[i] @ R
                         t = R_c2w[i] @ t + t_c2w[i]
-                        t = t * scale
+                        # t = t * scale
 
                         Rs.append(R)
                         ts.append(t)

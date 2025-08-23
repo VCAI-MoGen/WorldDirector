@@ -169,7 +169,7 @@ class Config:
     bilateral_grid_shape: Tuple[int, int, int] = (16, 16, 8)
 
     # Enable depth loss. (experimental)
-    depth_loss: bool = False
+    depth_loss: bool = True
     # Weight for depth loss
     depth_lambda: float = 1e-2
 
