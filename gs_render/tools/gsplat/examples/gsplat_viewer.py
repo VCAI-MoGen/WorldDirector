@@ -289,6 +289,40 @@ class GsplatViewer(Viewer):
                 def _(_) -> None:
                     self.render_tab_state.root_path = root_path_input.value
 
+                load_cam_params_button = server.gui.add_button(
+                    "Load Camera Parameters",
+                    color="yellow",
+                    icon=viser.Icon.FOLDER_OPEN,
+                    hint="Load a camera parameter",
+                )
+
+                @load_cam_params_button.on_click
+                def _(event: viser.GuiEvent) -> None: 
+                    client = event.client
+                    assert client is not None
+
+                    cam_param_dir_path = os.path.join(self.render_tab_state.root_path, "cam_params_scene")
+                    cam_param_path_list = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
+                    cam_params_list = []
+                    for cam_param_path in cam_param_path_list:
+                        with open(cam_param_path, 'r') as f:
+                            cam_param = json.load(f)
+                        cam_params_list.append(cam_param)
+                    R_c2w = np.array([cam_param['R'] for cam_param in cam_params_list]) # c2w
+                    t_c2w = np.array([cam_param['t'] for cam_param in cam_params_list]) # c2w
+                    focal = np.array([cam_param['focal'] for cam_param in cam_params_list])
+                    princpt = np.array([cam_param['princpt'] for cam_param in cam_params_list])
+
+                    from scipy.spatial.transform import Rotation
+                    self.render_tab_state.camera_translation = t_c2w[0]
+                    r = Rotation.from_matrix(R_c2w[0].tolist())
+                    quat = r.as_quat() # (x, y, z, w)
+                    self.render_tab_state.camera_quat = [quat[3], quat[0], quat[1], quat[2]] # (w, x, y, z)
+                    fov_radians = 2 * np.arctan(2 * princpt[0][1] / (2 * focal[0][0]))
+                    for client in server.get_clients().values():
+                        client.camera.fov = fov_radians
+                    self.update_camera()
+
                 dump_image_button = server.gui.add_button(
                     "Dump Image",
                     color="green",
@@ -490,10 +524,65 @@ class GsplatViewer(Viewer):
                 def _(event: viser.GuiEvent) -> None: 
                     client = event.client
                     assert client is not None
-
-                    # client.scene.set_up_direction('+y')
                     
-                    #### TEST ####
+                    cam_param_dir_path = os.path.join(self.render_tab_state.root_path, "cam_params_scene")
+                    cam_param_path_list = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
+                    cam_params_list = []
+                    for cam_param_path in cam_param_path_list:
+                        with open(cam_param_path, 'r') as f:
+                            cam_param = json.load(f)
+                        cam_params_list.append(cam_param)
+                    R_c2w = np.array([cam_param['R'] for cam_param in cam_params_list]) # c2w
+                    t_c2w = np.array([cam_param['t'] for cam_param in cam_params_list]) # c2w
+                    focal = np.array([cam_param['focal'] for cam_param in cam_params_list])
+                    princpt = np.array([cam_param['princpt'] for cam_param in cam_params_list])
+
+                    from scipy.spatial.transform import Rotation
+                    self.render_tab_state.camera_translation = t_c2w[-1]
+                    r = Rotation.from_matrix(R_c2w[-1].tolist())
+                    quat = r.as_quat() # (x, y, z, w)
+                    self.render_tab_state.camera_quat = [quat[3], quat[0], quat[1], quat[2]] # (w, x, y, z)
+                    fov_radians = 2 * np.arctan(2 * princpt[-1][1] / (2 * focal[-1][0]))
+                    for client in server.get_clients().values():
+                        client.camera.fov = fov_radians
+                    self.update_camera()
+
+                    mesh_dir_path = os.path.join(self.render_tab_state.root_path, "smplx_optimized/meshes_smoothed")
+                    mesh_path_list = [os.path.join(mesh_dir_path, f'{i}.ply') for i in range(len(os.listdir(mesh_dir_path)))]
+
+                    indicies_to_show = [0, 26, 42, 80]
+                    # indicies_to_show = [i for i in range(len(mesh_path_list))]
+                    mesh_path_list = [mesh_path_list[idx] for idx in indicies_to_show]
+
+
+                    for i, mesh_path in enumerate(mesh_path_list):
+                        mesh = trimesh.load_mesh(mesh_path)
+
+                        c2w = np.eye(4)
+                        c2w[:3, :3] = R_c2w[i]
+                        c2w[:3, 3] = t_c2w[i]
+
+                        mesh.apply_transform(c2w)
+                        mesh_handle = client.scene.add_mesh_trimesh(
+                            mesh_path,
+                            mesh=mesh
+                        )
+                        # mesh_handle.remove()
+
+                    print("Visualize SMPL-X")
+
+                vis_pc_from_depth_button = server.gui.add_button(
+                    "Visualize Point Cloud from Depth",
+                    color="blue",
+                    icon=viser.Icon.PLAYER_PLAY,
+                    hint="Visualize Point Cloud from depth",
+                )
+
+                @vis_pc_from_depth_button.on_click
+                def _(event: viser.GuiEvent) -> None: 
+                    client = event.client
+                    assert client is not None
+                    
                     def depth_to_point_cloud(depth_map, intrinsics):
                         H, W = depth_map.shape
                         i, j = np.meshgrid(np.arange(W), np.arange(H))
@@ -536,17 +625,23 @@ class GsplatViewer(Viewer):
                     additional_rgbs = []
                     additional_cam_params = []
 
-                    additional_depth = np.load('/data/ckd248/SCVideo/gs_render/tools/gsplat/results/depth/0.npy')[:, :, 0]
-                    additional_rgb = cv2.cvtColor(cv2.imread('/data/ckd248/SCVideo/gs_render/tools/gsplat/results/image/0.png'), cv2.COLOR_BGR2RGB)
-                    additional_cam_param_path = '/data/ckd248/SCVideo/gs_render/tools/gsplat/results/depth/0.json'
+                    depth_dir_path = os.path.join(self.output_dir, 'depth')
+                    rgb_dir_path = os.path.join(self.output_dir, 'image')
 
-                    with open(additional_cam_param_path, 'r') as f:
-                        additional_cam_param = json.load(f)
+                    file_cnt = len([filename for filename in os.listdir(depth_dir_path) if filename.endswith('.json') and filename[:-5].isdigit()])
 
-                    additional_depths.append(additional_depth)
-                    additional_rgbs.append(additional_rgb)
-                    additional_cam_params.append(additional_cam_param)
-                    
+                    for i in range(file_cnt):
+                        additional_depth = np.load(os.path.join(depth_dir_path, f'{i}.npy'))[:, :, 0]
+                        additional_rgb = cv2.cvtColor(cv2.imread(os.path.join(rgb_dir_path, f'{i}.png')), cv2.COLOR_BGR2RGB)
+                        additional_cam_param_path = os.path.join(depth_dir_path, f'{i}.json')
+
+                        with open(additional_cam_param_path, 'r') as f:
+                            additional_cam_param = json.load(f)
+
+                        additional_depths.append(additional_depth)
+                        additional_rgbs.append(additional_rgb)
+                        additional_cam_params.append(additional_cam_param)
+                    """
                     additional_depth = np.load('/data/ckd248/SCVideo/gs_render/tools/gsplat/results/depth/1.npy')[:, :, 0]
                     additional_rgb = cv2.cvtColor(cv2.imread('/data/ckd248/SCVideo/gs_render/tools/gsplat/results/image/1.png'), cv2.COLOR_BGR2RGB)
                     additional_cam_param_path = '/data/ckd248/SCVideo/gs_render/tools/gsplat/results/depth/1.json'
@@ -557,7 +652,7 @@ class GsplatViewer(Viewer):
                     additional_depths.append(additional_depth)
                     additional_rgbs.append(additional_rgb)
                     additional_cam_params.append(additional_cam_param)
-
+                    """
                     rgb1 = np.array([])
                     depth1 = np.array([])
                     cam_params = []
@@ -571,6 +666,21 @@ class GsplatViewer(Viewer):
                     depth1 = np.array(depth1)
 
                     cam_params += additional_cam_params
+
+                    R_c2w = np.array([cam_param['R'] for cam_param in cam_params]) # c2w
+                    t_c2w = np.array([cam_param['t'] for cam_param in cam_params]) # c2w
+                    focal = np.array([cam_param['focal'] for cam_param in cam_params])
+                    princpt = np.array([cam_param['princpt'] for cam_param in cam_params])
+
+                    from scipy.spatial.transform import Rotation
+                    self.render_tab_state.camera_translation = t_c2w[0]
+                    r = Rotation.from_matrix(R_c2w[0].tolist())
+                    quat = r.as_quat() # (x, y, z, w)
+                    self.render_tab_state.camera_quat = [quat[3], quat[0], quat[1], quat[2]] # (w, x, y, z)
+                    fov_radians = 2 * np.arctan(2 * princpt[0][1] / (2 * focal[0][0]))
+                    for client in server.get_clients().values():
+                        client.camera.fov = fov_radians
+                    self.update_camera()
 
                     # ---------------- 시각화 -----------------------
 
@@ -600,7 +710,7 @@ class GsplatViewer(Viewer):
                             name=f"pc_world_{i}",
                             points=pc_world,
                             colors=pc_rgb,
-                            point_size=0.0005
+                            point_size=0.001
                         )
                         """
                         pc_cam = depth_to_point_cloud(depth2[i], intrinsics)
@@ -616,72 +726,7 @@ class GsplatViewer(Viewer):
                             point_size=0.001
                         )
                         """
-                    """
-                    indicies_to_show = [0, 26, 42, 80]
-                    print(len(mesh_path_list))
-                    # indicies_to_show = [i for i in range(len(mesh_path_list))]
-                    mesh_path_list = [mesh_path_list[idx] for idx in indicies_to_show]
-
-                    for mesh_path in mesh_path_list:
-
-                        mesh = trimesh.load_mesh(mesh_path)
-
-                        c2w = np.eye(4)
-                        c2w[:3, :3] = c2w_R
-                        c2w[:3, 3] = c2w_t
-                        mesh.apply_transform(c2w)
-                        mesh_handle = client.scene.add_mesh_trimesh(
-                            mesh_path,
-                            mesh=mesh
-                        )
-                    """
-                    """
-                    cam_param_dir_path = os.path.join(self.render_tab_state.root_path, "cam_params_scene")
-                    cam_param_path_list = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
-                    cam_params_list = []
-                    for cam_param_path in cam_param_path_list:
-                        with open(cam_param_path, 'r') as f:
-                            cam_param = json.load(f)
-                        cam_params_list.append(cam_param)
-                    R_c2w = np.array([cam_param['R'] for cam_param in cam_params_list]) # c2w
-                    t_c2w = np.array([cam_param['t'] for cam_param in cam_params_list]) # c2w
-                    focal = np.array([cam_param['focal'] for cam_param in cam_params_list])
-                    princpt = np.array([cam_param['princpt'] for cam_param in cam_params_list])
-
-                    from scipy.spatial.transform import Rotation
-                    self.render_tab_state.camera_translation = t_c2w[-1]
-                    r = Rotation.from_matrix(R_c2w[-1].tolist())
-                    quat = r.as_quat() # (x, y, z, w)
-                    self.render_tab_state.camera_quat = [quat[3], quat[0], quat[1], quat[2]] # (w, x, y, z)
-                    fov_radians = 2 * np.arctan(2 * princpt[-1][1] / (2 * focal[-1][0]))
-                    for client in server.get_clients().values():
-                        client.camera.fov = fov_radians
-                    self.update_camera()
-
-                    mesh_dir_path = os.path.join(self.render_tab_state.root_path, "smplx_optimized/meshes_smoothed")
-                    mesh_path_list = [os.path.join(mesh_dir_path, f'{i}.ply') for i in range(len(os.listdir(mesh_dir_path)))]
-
-                    indicies_to_show = [0, 26, 42, 80]
-                    # indicies_to_show = [i for i in range(len(mesh_path_list))]
-                    mesh_path_list = [mesh_path_list[idx] for idx in indicies_to_show]
-
-
-                    for i, mesh_path in enumerate(mesh_path_list):
-                        mesh = trimesh.load_mesh(mesh_path)
-
-                        c2w = np.eye(4)
-                        c2w[:3, :3] = R_c2w[i]
-                        c2w[:3, 3] = t_c2w[i]
-
-                        # mesh.apply_transform(c2w)
-                        mesh_handle = client.scene.add_mesh_trimesh(
-                            mesh_path,
-                            mesh=mesh
-                        )
-                        # mesh_handle.remove()
-
-                    print("Visualize SMPL-X")
-                    """
+                    
                 dump_depth_video_button = server.gui.add_button(
                     "Dump Depth Video",
                     color="red",
