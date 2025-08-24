@@ -114,7 +114,7 @@ print(f"Filtered_frame_cnt: {filtered_frame_cnt}")
 
 # Reconstruct 3D point clouds
 os.chdir('./vggt')
-cmd = 'python demo_colmap.py --scene_dir ' + scene_path # + ' --use_ba' ' --query_frame_num 3'
+cmd = 'python demo_colmap.py --scene_dir ' + scene_path + ' --use_ba' # ' --query_frame_num 3'
 print(cmd)
 result = os.system(cmd)
 if (result != 0):
