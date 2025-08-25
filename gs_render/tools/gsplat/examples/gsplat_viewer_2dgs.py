@@ -56,7 +56,6 @@ class GsplatViewer(Viewer):
         self.render_tab_state = GsplatRenderTabState()
         self._rendering_tab_handles = {}
         self._rendering_folder = self.server.gui.add_folder("Rendering")
-        self.render_tab_state.preview_render = True
         self.render_tab_state.render_height, self.render_tab_state.render_width = self.render_res
 
     def _populate_rendering_tab(self):
@@ -251,12 +250,11 @@ class GsplatViewer(Viewer):
                 def _(event: viser.GuiEvent) -> None:
                     client = event.client
                     assert client is not None
+                    self.render_tab_state.render_mode = "rgb"
                     camera_state = self.get_camera_state(client) # c2w
                     image_dir = os.path.join(self.output_dir, "image")
                     os.makedirs(image_dir, exist_ok=True)
                     # server.scene.set_global_visibility(False)
-                    image = self.render_fn(camera_state, self.render_tab_state)
-                    image = (image * 255).astype(np.uint8)
                     image = client.get_render(
                         height=self.render_tab_state.render_height,
                         width=self.render_tab_state.render_width,
@@ -302,7 +300,9 @@ class GsplatViewer(Viewer):
                     depth_dir = os.path.join(self.output_dir, "depth")
                     os.makedirs(depth_dir, exist_ok=True)
                     server.scene.set_global_visibility(False)
+                    self.render_tab_state.preview_render = True
                     depth = self.render_fn(camera_state, self.render_tab_state)
+                    self.render_tab_state.preview_render = False
                     depth_value = depth[:, :, 3:4]
                     depth = depth[:, :, 0:3]
                     
@@ -452,9 +452,9 @@ class GsplatViewer(Viewer):
                     mesh_dir_path = os.path.join(self.render_tab_state.root_path, "smplx_optimized/meshes_smoothed")
                     mesh_path_list = [os.path.join(mesh_dir_path, f'{i}.ply') for i in range(len(os.listdir(mesh_dir_path)))]
 
-                    # indicies_to_show = [0, 26, 42, 80]
-                    indicies_to_show = [i for i in range(len(mesh_path_list))]
-                    mesh_path_list = [mesh_path_list[idx] for idx in indicies_to_show]
+                    indices_to_show = [0, 26, 42, 80]
+                    # indices_to_show = [i for i in range(len(mesh_path_list))]
+                    mesh_path_list = [mesh_path_list[idx] for idx in indices_to_show]
 
 
                     for i, mesh_path in enumerate(mesh_path_list):
@@ -531,7 +531,7 @@ class GsplatViewer(Viewer):
                     # ---------------- 시각화 -----------------------
 
                     for i in range(len(cam_params)):
-                        # if i != 0 and i != 80:
+                        # if i != 0:#  and i != 80:
                         #     continue
                         fx, fy = cam_params[i]['focal']
                         cx, cy = cam_params[i]['princpt']
@@ -607,7 +607,9 @@ class GsplatViewer(Viewer):
 
                         camera_state = self.get_camera_state(client)
                         server.scene.set_global_visibility(False)
+                        self.render_tab_state.preview_render = True
                         depth = self.render_fn(camera_state, self.render_tab_state)
+                        self.render_tab_state.preview_render = False
                         depth_value = depth[:, :, 3:4]
                         depth = depth[:, :, 0:3]
                         
@@ -713,7 +715,9 @@ class GsplatViewer(Viewer):
 
                         camera_state = self.get_camera_state(client)
                         server.scene.set_global_visibility(False)
+                        self.render_tab_state.preview_render = True
                         render = self.render_fn(camera_state, self.render_tab_state)
+                        self.render_tab_state.preview_render = False
                         
                         render_path = os.path.join(render_dir_path, f'{i}.png')
                         render = (render * 255).astype(np.uint8)

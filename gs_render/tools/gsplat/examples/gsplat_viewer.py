@@ -63,7 +63,6 @@ class GsplatViewer(Viewer):
         self.render_tab_state = GsplatRenderTabState()
         self._rendering_tab_handles = {}
         self._rendering_folder = self.server.gui.add_folder("Rendering")
-        self.render_tab_state.preview_render = True
         self.render_tab_state.render_height, self.render_tab_state.render_width = self.render_res
 
     def _populate_rendering_tab(self):
@@ -286,8 +285,6 @@ class GsplatViewer(Viewer):
                     image_dir = os.path.join(self.output_dir, "image")
                     os.makedirs(image_dir, exist_ok=True)
                     # server.scene.set_global_visibility(False)
-                    image = self.render_fn(camera_state, self.render_tab_state)
-                    image = (image * 255).astype(np.uint8)
                     image = client.get_render(
                         height=self.render_tab_state.render_height,
                         width=self.render_tab_state.render_width,
@@ -333,7 +330,9 @@ class GsplatViewer(Viewer):
                     depth_dir = os.path.join(self.output_dir, "depth")
                     os.makedirs(depth_dir, exist_ok=True)
                     server.scene.set_global_visibility(False)
+                    self.render_tab_state.preview_render = True
                     depth = self.render_fn(camera_state, self.render_tab_state)
+                    self.render_tab_state.preview_render = False
                     depth_value = depth[:, :, 3:4]
                     depth = depth[:, :, 0:3]
                     
@@ -395,7 +394,7 @@ class GsplatViewer(Viewer):
                     focal = np.array([cam_param['focal'] for cam_param in cam_params_list])
                     princpt = np.array([cam_param['princpt'] for cam_param in cam_params_list])
 
-                    self.update_camera(R_c2w[0], t_c2w[0], focal[0], princpt[0])
+                    self.update_camera(client, R_c2w[0], t_c2w[0], focal[0], princpt[0])
 
                     traj_dir_path = os.path.join(self.render_tab_state.root_path, "smplx_optimized/traj_smoothed")
                     traj_path_list = [os.path.join(traj_dir_path, f'{i}.json') for i in range(len(os.listdir(traj_dir_path)))]
@@ -478,14 +477,14 @@ class GsplatViewer(Viewer):
                     focal = np.array([cam_param['focal'] for cam_param in cam_params_list])
                     princpt = np.array([cam_param['princpt'] for cam_param in cam_params_list])
 
-                    self.update_camera(R_c2w[0], t_c2w[0], focal[0], princpt[0])
+                    self.update_camera(client, R_c2w[0], t_c2w[0], focal[0], princpt[0])
 
                     mesh_dir_path = os.path.join(self.render_tab_state.root_path, "smplx_optimized/meshes_smoothed")
                     mesh_path_list = [os.path.join(mesh_dir_path, f'{i}.ply') for i in range(len(os.listdir(mesh_dir_path)))]
 
-                    # indicies_to_show = [0, 26, 42, 80]
-                    indicies_to_show = [i for i in range(len(mesh_path_list))]
-                    mesh_path_list = [mesh_path_list[idx] for idx in indicies_to_show]
+                    indices_to_show = [0, 26, 42, 80]
+                    # indices_to_show = [i for i in range(len(mesh_path_list))]
+                    mesh_path_list = [mesh_path_list[idx] for idx in indices_to_show]
 
 
                     for i, mesh_path in enumerate(mesh_path_list):
@@ -557,12 +556,12 @@ class GsplatViewer(Viewer):
                     focal = np.array([cam_param['focal'] for cam_param in cam_params])
                     princpt = np.array([cam_param['princpt'] for cam_param in cam_params])
 
-                    self.update_camera(R_c2w[0], t_c2w[0], focal[0], princpt[0])
+                    self.update_camera(client, R_c2w[0], t_c2w[0], focal[0], princpt[0])
 
                     # ---------------- 시각화 -----------------------
 
                     for i in range(len(cam_params)):
-                        # if i != 0 and i != 80:
+                        # if i != 0 and i != len(cam_params) - 1:
                         #     continue
                         fx, fy = cam_params[i]['focal']
                         cx, cy = cam_params[i]['princpt']
@@ -595,13 +594,14 @@ class GsplatViewer(Viewer):
 
                         # c2w 변환
                         pc_world = apply_c2w(pc_cam, c2w_R, c2w_t)
-                        
+                        """
                         client.scene.add_point_cloud(
                             name=f"pc_world2_{i}",
                             points=pc_world,
                             colors=pc_rgb,
                             point_size=0.001
                         )
+                        """
                         
                     
                 dump_depth_video_button = server.gui.add_button(
@@ -633,11 +633,13 @@ class GsplatViewer(Viewer):
                         focal = np.array(cam_param['focal'])
                         princpt = np.array(cam_param['princpt'])
 
-                        self.update_camera(R, t, focal, princpt)
+                        self.update_camera(client, R, t, focal, princpt)
 
                         camera_state = self.get_camera_state(client)
                         server.scene.set_global_visibility(False)
+                        self.render_tab_state.preview_render = True
                         depth = self.render_fn(camera_state, self.render_tab_state)
+                        self.render_tab_state.preview_render = False
                         depth_value = depth[:, :, 3:4]
                         depth = depth[:, :, 0:3]
                         
@@ -739,11 +741,13 @@ class GsplatViewer(Viewer):
                         focal = focal_c2w[i]
                         princpt = princpt_c2w[i]
 
-                        self.update_camera(R, t, focal, princpt)
+                        self.update_camera(client, R, t, focal, princpt)
 
                         camera_state = self.get_camera_state(client)
                         server.scene.set_global_visibility(False)
+                        self.render_tab_state.preview_render = True
                         render = self.render_fn(camera_state, self.render_tab_state)
+                        self.render_tab_state.preview_render = False
                         
                         render_path = os.path.join(render_dir_path, f'{i}.png')
                         render = (render * 255).astype(np.uint8)
@@ -783,9 +787,6 @@ class GsplatViewer(Viewer):
                 "colormap_dropdown": colormap_dropdown,
                 "rasterize_mode_dropdown": rasterize_mode_dropdown,
                 "camera_model_dropdown": camera_model_dropdown,
-                "camera_translation": camera_translation,
-                "camera_quat1": camera_quat1,
-                "camera_quat2": camera_quat2
             }
         )
         super()._populate_rendering_tab()
