@@ -89,7 +89,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
 
         if render_tab_state.render_mode == "depth":
             # normalize depth to [0, 1]
-            depth = render_median
+            depth = render_median[0]
             if render_tab_state.normalize_nearfar:
                 near_plane = render_tab_state.near_plane
                 far_plane = render_tab_state.far_plane
@@ -106,13 +106,33 @@ def main(local_rank: int, world_rank, world_size: int, args):
                 .numpy()
             )
         elif render_tab_state.render_mode == "normal":
-            render_normals = render_normals * 0.5 + 0.5  # normalize to [0, 1]
+            render_normals = render_normals[0] * 0.5 + 0.5  # normalize to [0, 1]
             renders = render_normals.cpu().numpy()
         elif render_tab_state.render_mode == "alpha":
             alpha = render_alphas[0, ..., 0:1]
             renders = (
                 apply_float_colormap(alpha, render_tab_state.colormap).cpu().numpy()
             )
+        elif render_tab_state.render_mode == "depth(precise)":
+            # normalize depth to [0, 1]
+            depth = render_median[0]
+            if render_tab_state.normalize_nearfar:
+                near_plane = render_tab_state.near_plane
+                far_plane = render_tab_state.far_plane
+            else:
+                near_plane = depth.min()
+                far_plane = depth.max()
+            depth_norm = (depth - near_plane) / (far_plane - near_plane + 1e-10)
+            depth_norm = torch.clip(depth_norm, 0, 1)
+            if render_tab_state.inverse:
+                depth_norm = 1 - depth_norm
+            renders = (
+                apply_float_colormap(depth_norm, render_tab_state.colormap)
+                .cpu()
+                .numpy()
+            )
+            depth = depth.cpu().numpy()
+            renders = np.concatenate((renders, depth), axis=-1)
         else:
             render_colors = render_colors[0, ..., 0:3].clamp(0, 1)
             renders = render_colors.cpu().numpy()
@@ -124,6 +144,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
         render_fn=viewer_render_fn,
         output_dir=Path(args.output_dir),
         mode="rendering",
+        render_res=(480, 720)
     )
     print("Viewer running... Ctrl+C to exit.")
     time.sleep(100000)
