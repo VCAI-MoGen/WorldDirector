@@ -49,7 +49,7 @@ if os.path.exists(osp.join(root_path, 'scene_gs')):
     for i in range(image_len):
         shutil.copy(cam_param_path, osp.join(cam_param_dir, f'{i}.json'))
 """
-"""
+
 # make camera parameters
 os.chdir('./vggt')
 cmd = 'python run_vggt.py --root_path ' + root_path
@@ -82,7 +82,7 @@ if (result != 0):
     print('something bad happened when running SMPLest-X. terminate the script.')
     sys.exit()
 os.chdir('..')
-"""
+
 """
 os.chdir('./LHM')
 MODEL_NAME='LHM-1B'
@@ -109,7 +109,7 @@ if (result != 0):
     sys.exit()
 os.chdir('..')
 """
-"""
+
 # sapiens (get 2D whole-body keypoints)
 os.chdir('./sapiens/lite/scripts/demo/torchscript')
 cmd = 'python run_sapiens_kpt.py --root_path ' + root_path + ' --vis_format video'
@@ -160,7 +160,6 @@ if (result != 0):
     print('something bad happened when running scene reconstruction. terminate the script.')
     sys.exit()
 os.chdir('..')
-"""
 
 # fit depth
 os.chdir('../main')
