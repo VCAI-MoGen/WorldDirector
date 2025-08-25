@@ -244,7 +244,6 @@ def main(local_rank: int, world_rank, world_size: int, args):
         print(renders.shape)
         if renders.shape[0] != render_tab_state.render_height or renders.shape[1] != render_tab_state.render_width:
             print(renders.shape)
-            input()
             
         return renders
 
