@@ -85,7 +85,6 @@ def get_batch(
     # Get base batch
     if sample_id not in dataset.root_filenames:
         dataset.root_filenames.append(sample_id)
-    dataset.root_filenames.append("traj")
     sample_index = dataset.root_filenames.index(sample_id)
     raw_batch = dataset[sample_index]
     batch = collate_fn([to_device(raw_batch, device)])

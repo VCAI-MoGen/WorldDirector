@@ -90,33 +90,33 @@ class TrajectoryDataset(Dataset):
         self, raw_matrix_trajectory: TensorType["num_cams", 4, 4]
     ) -> TensorType[9, "num_cams"]:
         matrix_trajectory = torch.clone(raw_matrix_trajectory)
-        raw_rot = torch.clone(matrix_trajectory[:,:3,:3])
-        raw_trans = torch.clone(matrix_trajectory[:, :3, 3])
-
+        raw_rot = matrix_trajectory[:,:3,:3]
+        raw_trans = matrix_trajectory[:,:3,3]
 
         ######## camera rotatation and translation relative to the first frame of smplx root pose
+        #ref_rot/ref_trans retrieved from raw_feat of character dataset as R0 & t0 respectively
         if self.align_first_frame:
             if self.external_ref_rot is not None: 
-                ref_rot = self.external_ref_rot.to(raw_rot.device)
+                R0 = self.external_ref_rot.to(raw_rot.device)
             else:
-                ref_rot = raw_rot[0]
+                R0 = raw_rot[0]
             if self.external_ref_transl is not None:
-                ref_transl = self.external_ref_transl.to(raw_trans.device)
+                t0 = self.external_ref_transl.to(raw_trans.device)
             else: 
-                ref_transl = raw_trans[0]
+                t0 = raw_trans[0]
 
-            inv_ref_rot = torch.inverse(ref_rot)
-            raw_rot = raw_rot @ inv_ref_rot
-            raw_trans = (raw_trans - ref_transl)@inv_ref_rot
+        
+            raw_rot = raw_rot @ R0.transpose(-1,-2)
+            raw_trans = (raw_trans - t0) @ R0.transpose(-1,-2)
         
         if self.velocity:
             velocity = raw_trans[1:] - raw_trans[:-1]
             raw_trans = torch.cat([raw_trans[0][None], velocity])
-        if self.standardize:
-            raw_trans[0] -= self.shift_mean
-            raw_trans[0] /= self.shift_std
-            raw_trans[1:] -= self.norm_mean
-            raw_trans[1:] /= self.norm_std
+        # if self.standardize:
+        #     raw_trans[0] -= self.shift_mean
+        #     raw_trans[0] /= self.shift_std
+        #     raw_trans[1:] -= self.norm_mean
+        #     raw_trans[1:] /= self.norm_std
 
         rot6d = raw_rot[:, :, :2].permute(0, 2, 1).reshape(-1, 6)
 
