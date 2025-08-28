@@ -257,13 +257,16 @@ class WanVace(WanT2V):
 
         return vae.decode(trimed_zs)
 
-    def generate_mask_from_attention(self, video, attention, attn_thresh=0.95, pool_size=1):
+    def generate_mask_from_attention(self, video, mask_video, attention, attn_thresh=0.9, pool_size=1):
         video = video.to(attention)
         B, C, T, H, W = video.shape
         dtype = attention.dtype
         device = attention.device
 
         attention = attention.reshape(1 + T // 4, H // 16, W // 16)
+
+        
+        # 3D pooling
         mask = attention.view((1, 1) + attention.shape)
         mask = F.avg_pool3d(
             mask,
@@ -272,12 +275,26 @@ class WanVace(WanT2V):
             padding=(pool_size, pool_size, pool_size),
         )
         mask = F.interpolate(mask, size=(T, H, W), mode="trilinear", align_corners=False)
-
+        ###
+        """
+        # 2D pooling
+        mask = attention.unsqueeze(0)
+        mask = F.avg_pool2d(
+            mask,
+            kernel_size=(pool_size * 2 + 1, pool_size * 2 + 1),
+            stride=(1, 1),
+            padding=(pool_size, pool_size),
+        )
+        mask = mask.unsqueeze(0)
+        ###
+        """
+        mask = F.interpolate(mask, size=(T, H, W), mode="trilinear", align_corners=False)
         mask = mask.float().detach().cpu().numpy()
         import numpy as np
         attn_thresh = np.quantile(mask, attn_thresh)
         mask = torch.tensor(mask).to(device=device, dtype=dtype)
         mask = (mask >= attn_thresh).float()
+        mask = torch.logical_or(mask, mask_video).float()
 
         masked_video = video * (mask < 0.5) + (mask >= 0.5) * -0.0118
 
@@ -361,14 +378,14 @@ class WanVace(WanT2V):
             context_null = [t.to(self.device) for t in context_null]
         tokenizer = self.text_encoder.tokenizer
         tokenized = tokenizer([input_prompt], add_special_tokens=True)
-        # tokens = tokenizer.tokenizer.tokenize(input_prompt)
-        # print(tokens)
-        print(tokenized)
         tokens = [tokenizer.tokenizer.convert_ids_to_tokens(ids, skip_special_tokens=False) for ids in tokenized]
 
         for i, (text, tok) in enumerate(zip([input_prompt], tokens)):
             print(f"Original: {text}")
-            print(f"Tokens:   {tok}")
+            for idx, element in enumerate(tok):
+                if element == '<pad>':
+                    break
+                print(f"{idx}: {element}")
         human_text_idx = tokens[0].index('▁man')
         print('human_text_idx:', human_text_idx)
         # vace context encode
@@ -424,6 +441,8 @@ class WanVace(WanT2V):
 
             # sample videos
             latents = noise
+            masked_video = torch.stack(input_frames)
+            mask_video = torch.stack(input_masks)
 
             arg_c = {'context': context, 'seq_len': seq_len}
             arg_null = {'context': context_null, 'seq_len': seq_len}
@@ -441,7 +460,8 @@ class WanVace(WanT2V):
                 
                 import numpy as np
                 # wan branch dit blocks
-                root_dir = "/data/ckd248/SCVideo/Video_Generation/attention_map/VACE/test_0822"
+                root_dir = "/data/ckd248/SCVideo/Video_Generation/attention_map/VACE/normal"
+                dynamic_masking_step_threshold = 25
                 os.makedirs(root_dir, exist_ok=True)
                 step_dir = os.path.join(root_dir, str(idx))
                 os.makedirs(step_dir, exist_ok=True)
@@ -456,24 +476,8 @@ class WanVace(WanT2V):
                 attn_map_path = os.path.join(step_dir, 'main_avg_attn_map.npy')
                 np.save(attn_map_path, avg_cross_attn_map.detach().cpu().numpy())
 
-                avg_cross_attn_map = torch.mean(avg_cross_attn_map, dim=0)
-                human_cross_attn_map = avg_cross_attn_map[:, human_text_idx]
-
-                masked_video, human_attention_mask = self.generate_mask_from_attention(torch.stack(input_frames), human_cross_attn_map)
-
-                masked_video_path = os.path.join(step_dir, 'masked_video.mp4')
-                from wan.utils.utils import cache_video
-                cache_video(
-                tensor=masked_video,
-                save_file=masked_video_path,
-                fps=16,
-                nrow=1,
-                normalize=True,
-                value_range=(-1, 1))
-
-                z0_attn = self.vace_encode_frames(masked_video, input_ref_images, masks=human_attention_mask)
-                m0_attn = self.vace_encode_masks(human_attention_mask, input_ref_images)
-                z_attn = self.vace_latent(z0_attn, m0_attn)
+                main_avg_cross_attn_map = torch.mean(avg_cross_attn_map, dim=0)
+                main_human_cross_attn_map = main_avg_cross_attn_map[:, human_text_idx]
 
                 # control branch dit blocks
                 sum_cross_attn_map = None
@@ -486,6 +490,37 @@ class WanVace(WanT2V):
                 avg_cross_attn_map = sum_cross_attn_map / len(self.model.vace_blocks)
                 attn_map_path = os.path.join(step_dir, 'control_avg_attn_map.npy')
                 np.save(attn_map_path, avg_cross_attn_map.detach().cpu().numpy())
+
+                control_avg_cross_attn_map = torch.mean(avg_cross_attn_map, dim=0)
+                control_human_cross_attn_map = control_avg_cross_attn_map[:, human_text_idx]
+
+                human_cross_attn_map = (main_human_cross_attn_map + control_human_cross_attn_map) / 2
+
+                # masked_video, mask_video = self.generate_mask_from_attention(torch.stack(input_frames), torch.stack(input_masks), human_cross_attn_map)
+
+                masked_video_path = os.path.join(step_dir, 'masked_video.mp4')
+                from wan.utils.utils import cache_video
+                cache_video(
+                tensor=masked_video,
+                save_file=masked_video_path,
+                fps=16,
+                nrow=1,
+                normalize=True,
+                value_range=(-1, 1))
+
+                mask_video_path = os.path.join(step_dir, 'mask_video.mp4')
+                cache_video(
+                tensor=mask_video,
+                save_file=mask_video_path,
+                fps=16,
+                nrow=1,
+                normalize=True,
+                value_range=(0, 1))
+
+                if idx < dynamic_masking_step_threshold:
+                    z0_attn = self.vace_encode_frames(masked_video, input_ref_images, masks=mask_video)
+                    m0_attn = self.vace_encode_masks(mask_video, input_ref_images)
+                    z_attn = self.vace_latent(z0_attn, m0_attn)
 
                 noise_pred_uncond = self.model(
                     latent_model_input, t=timestep, vace_context=z, vace_context_scale=context_scale,**arg_null)[0]
@@ -500,7 +535,19 @@ class WanVace(WanT2V):
                     return_dict=False,
                     generator=seed_g)[0]
                 latents = [temp_x0.squeeze(0)]
-                z = z_attn
+
+                if idx < dynamic_masking_step_threshold:
+                    z = z_attn
+
+                decoded_video_path = os.path.join(step_dir, 'decoded_video.mp4')
+                decoded_video = torch.stack(self.decode_latent(latents, input_ref_images))
+                cache_video(
+                tensor=decoded_video,
+                save_file=decoded_video_path,
+                fps=16,
+                nrow=1,
+                normalize=True,
+                value_range=(-1, 1))
 
             x0 = latents
             if offload_model:
