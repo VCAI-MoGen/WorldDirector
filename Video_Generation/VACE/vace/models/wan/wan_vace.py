@@ -447,6 +447,8 @@ class WanVace(WanT2V):
             arg_c = {'context': context, 'seq_len': seq_len}
             arg_null = {'context': context_null, 'seq_len': seq_len}
 
+            save_attn = False
+
             for idx, t in enumerate(tqdm(timesteps)):
                 latent_model_input = latents
                 # print(latent_model_input[0].shape) # (16, 22, 60, 90) = (C, 1 (ref image) + 1 + T / 4, H / 8, W / 8)
@@ -458,69 +460,70 @@ class WanVace(WanT2V):
                 noise_pred_cond = self.model(
                     latent_model_input, t=timestep, vace_context=z, vace_context_scale=context_scale, **arg_c)[0]
                 
-                import numpy as np
-                # wan branch dit blocks
-                root_dir = "/data/ckd248/SCVideo/Video_Generation/attention_map/VACE/normal"
-                dynamic_masking_step_threshold = 25
-                os.makedirs(root_dir, exist_ok=True)
-                step_dir = os.path.join(root_dir, str(idx))
-                os.makedirs(step_dir, exist_ok=True)
-                sum_cross_attn_map = None
-                for block_idx, block in enumerate(self.model.blocks):
-                    cross_attn_maps = block.cross_attn.attention_map # (num_heads, q_dim, k_dim)
-                    if sum_cross_attn_map is None:
-                        sum_cross_attn_map = cross_attn_maps
-                    else:
-                        sum_cross_attn_map += cross_attn_maps
-                avg_cross_attn_map = sum_cross_attn_map / len(self.model.blocks)
-                attn_map_path = os.path.join(step_dir, 'main_avg_attn_map.npy')
-                np.save(attn_map_path, avg_cross_attn_map.detach().cpu().numpy())
+                if save_attn:
+                    import numpy as np
+                    # wan branch dit blocks
+                    root_dir = "/data/ckd248/SCVideo/Video_Generation/attention_map/VACE/normal"
+                    dynamic_masking_step_threshold = 25
+                    os.makedirs(root_dir, exist_ok=True)
+                    step_dir = os.path.join(root_dir, str(idx))
+                    os.makedirs(step_dir, exist_ok=True)
+                    sum_cross_attn_map = None
+                    for block_idx, block in enumerate(self.model.blocks):
+                        cross_attn_maps = block.cross_attn.attention_map # (num_heads, q_dim, k_dim)
+                        if sum_cross_attn_map is None:
+                            sum_cross_attn_map = cross_attn_maps
+                        else:
+                            sum_cross_attn_map += cross_attn_maps
+                    avg_cross_attn_map = sum_cross_attn_map / len(self.model.blocks)
+                    attn_map_path = os.path.join(step_dir, 'main_avg_attn_map.npy')
+                    np.save(attn_map_path, avg_cross_attn_map.detach().cpu().numpy())
 
-                main_avg_cross_attn_map = torch.mean(avg_cross_attn_map, dim=0)
-                main_human_cross_attn_map = main_avg_cross_attn_map[:, human_text_idx]
+                    main_avg_cross_attn_map = torch.mean(avg_cross_attn_map, dim=0)
+                    main_human_cross_attn_map = main_avg_cross_attn_map[:, human_text_idx]
 
-                # control branch dit blocks
-                sum_cross_attn_map = None
-                for block_idx, block in enumerate(self.model.vace_blocks):
-                    cross_attn_maps = block.cross_attn.attention_map # (num_heads, q_dim, k_dim)
-                    if sum_cross_attn_map is None:
-                        sum_cross_attn_map = cross_attn_maps
-                    else:
-                        sum_cross_attn_map += cross_attn_maps
-                avg_cross_attn_map = sum_cross_attn_map / len(self.model.vace_blocks)
-                attn_map_path = os.path.join(step_dir, 'control_avg_attn_map.npy')
-                np.save(attn_map_path, avg_cross_attn_map.detach().cpu().numpy())
+                    # control branch dit blocks
+                    sum_cross_attn_map = None
+                    for block_idx, block in enumerate(self.model.vace_blocks):
+                        cross_attn_maps = block.cross_attn.attention_map # (num_heads, q_dim, k_dim)
+                        if sum_cross_attn_map is None:
+                            sum_cross_attn_map = cross_attn_maps
+                        else:
+                            sum_cross_attn_map += cross_attn_maps
+                    avg_cross_attn_map = sum_cross_attn_map / len(self.model.vace_blocks)
+                    attn_map_path = os.path.join(step_dir, 'control_avg_attn_map.npy')
+                    np.save(attn_map_path, avg_cross_attn_map.detach().cpu().numpy())
 
-                control_avg_cross_attn_map = torch.mean(avg_cross_attn_map, dim=0)
-                control_human_cross_attn_map = control_avg_cross_attn_map[:, human_text_idx]
+                    control_avg_cross_attn_map = torch.mean(avg_cross_attn_map, dim=0)
+                    control_human_cross_attn_map = control_avg_cross_attn_map[:, human_text_idx]
 
-                human_cross_attn_map = (main_human_cross_attn_map + control_human_cross_attn_map) / 2
+                    human_cross_attn_map = (main_human_cross_attn_map + control_human_cross_attn_map) / 2
 
-                # masked_video, mask_video = self.generate_mask_from_attention(torch.stack(input_frames), torch.stack(input_masks), human_cross_attn_map)
+                    # masked_video, mask_video = self.generate_mask_from_attention(torch.stack(input_frames), torch.stack(input_masks), human_cross_attn_map)
 
-                masked_video_path = os.path.join(step_dir, 'masked_video.mp4')
-                from wan.utils.utils import cache_video
-                cache_video(
-                tensor=masked_video,
-                save_file=masked_video_path,
-                fps=16,
-                nrow=1,
-                normalize=True,
-                value_range=(-1, 1))
+                    masked_video_path = os.path.join(step_dir, 'masked_video.mp4')
+                    from wan.utils.utils import cache_video
+                    cache_video(
+                    tensor=masked_video,
+                    save_file=masked_video_path,
+                    fps=16,
+                    nrow=1,
+                    normalize=True,
+                    value_range=(-1, 1))
 
-                mask_video_path = os.path.join(step_dir, 'mask_video.mp4')
-                cache_video(
-                tensor=mask_video,
-                save_file=mask_video_path,
-                fps=16,
-                nrow=1,
-                normalize=True,
-                value_range=(0, 1))
+                    mask_video_path = os.path.join(step_dir, 'mask_video.mp4')
+                    cache_video(
+                    tensor=mask_video,
+                    save_file=mask_video_path,
+                    fps=16,
+                    nrow=1,
+                    normalize=True,
+                    value_range=(0, 1))
 
-                if idx < dynamic_masking_step_threshold:
-                    z0_attn = self.vace_encode_frames(masked_video, input_ref_images, masks=mask_video)
-                    m0_attn = self.vace_encode_masks(mask_video, input_ref_images)
-                    z_attn = self.vace_latent(z0_attn, m0_attn)
+                    if idx < dynamic_masking_step_threshold:
+                        z0_attn = self.vace_encode_frames(masked_video, input_ref_images, masks=mask_video)
+                        m0_attn = self.vace_encode_masks(mask_video, input_ref_images)
+                        z_attn = self.vace_latent(z0_attn, m0_attn)
 
                 noise_pred_uncond = self.model(
                     latent_model_input, t=timestep, vace_context=z, vace_context_scale=context_scale,**arg_null)[0]
@@ -536,18 +539,18 @@ class WanVace(WanT2V):
                     generator=seed_g)[0]
                 latents = [temp_x0.squeeze(0)]
 
-                if idx < dynamic_masking_step_threshold:
+                if save_attn and idx < dynamic_masking_step_threshold:
                     z = z_attn
 
-                decoded_video_path = os.path.join(step_dir, 'decoded_video.mp4')
-                decoded_video = torch.stack(self.decode_latent(latents, input_ref_images))
-                cache_video(
-                tensor=decoded_video,
-                save_file=decoded_video_path,
-                fps=16,
-                nrow=1,
-                normalize=True,
-                value_range=(-1, 1))
+                    decoded_video_path = os.path.join(step_dir, 'decoded_video.mp4')
+                    decoded_video = torch.stack(self.decode_latent(latents, input_ref_images))
+                    cache_video(
+                    tensor=decoded_video,
+                    save_file=decoded_video_path,
+                    fps=16,
+                    nrow=1,
+                    normalize=True,
+                    value_range=(-1, 1))
 
             x0 = latents
             if offload_model:
