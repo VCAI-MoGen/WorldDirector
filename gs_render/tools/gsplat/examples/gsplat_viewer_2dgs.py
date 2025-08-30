@@ -33,6 +33,8 @@ class GsplatRenderTabState(RenderTabState):
     ] = "turbo"
     # LCY
     root_path: str = "/home/ckd248/data/SCVideo/HSI/fitting/data/Custom/data/bicycle_dataset_2d"
+    running_mesh: bool = False
+    running_mesh_idx: int = 0
 
 
 class GsplatViewer(Viewer):
@@ -207,7 +209,7 @@ class GsplatViewer(Viewer):
                 # LCY
                 root_path_input = server.gui.add_text(
                     "Root Path",
-                    initial_value="Fill me!",
+                    initial_value=self.render_tab_state.root_path,
                     hint="Root Path for data"
                 )
                 @root_path_input.on_update
@@ -399,7 +401,7 @@ class GsplatViewer(Viewer):
                         colors=colors,     # (N, 3) in [0, 1]
                         point_size=0.01
                     )
-
+                    """
                     from plyfile import PlyData
 
                     plydata = PlyData.read('/home/ckd248/data/gs_render/tools/3DGS-to-PC/3dgs_pc.ply')
@@ -422,7 +424,82 @@ class GsplatViewer(Viewer):
                         point_size=0.005
                     )
                     print("Visualize Point Clouds")
+                    """
+                play_SMPL_button = server.gui.add_button(
+                    "Play SMPL",
+                    color="white",
+                    icon=viser.Icon.PLAYER_PLAY,
+                    hint="Play SMPL-X as mesh.",
+                )
 
+                @play_SMPL_button.on_click
+                def _(event: viser.GuiEvent) -> None: 
+                    client = event.client
+                    assert client is not None
+                    
+                    cam_param_dir_path = os.path.join(self.render_tab_state.root_path, "cam_params_scene")
+                    cam_param_path_list = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
+                    cam_params_list = []
+                    for cam_param_path in cam_param_path_list:
+                        with open(cam_param_path, 'r') as f:
+                            cam_param = json.load(f)
+                        cam_params_list.append(cam_param)
+                    R_c2w = np.array([cam_param['R'] for cam_param in cam_params_list]) # c2w
+                    t_c2w = np.array([cam_param['t'] for cam_param in cam_params_list]) # c2w
+                    focal = np.array([cam_param['focal'] for cam_param in cam_params_list])
+                    princpt = np.array([cam_param['princpt'] for cam_param in cam_params_list])
+
+                    self.update_camera(client, R_c2w[0], t_c2w[0], focal[0], princpt[0])
+
+                    mesh_dir_path = os.path.join(self.render_tab_state.root_path, "smplx_optimized/meshes_smoothed")
+                    mesh_path_list = [os.path.join(mesh_dir_path, f'{i}.ply') for i in range(len(os.listdir(mesh_dir_path)))]
+
+                    import threading
+                    import time
+                    lock = threading.Lock()
+                    
+                    def render_next_mesh():
+                        while self.render_tab_state.running_mesh:
+                            with lock:
+                                i = self.render_tab_state.running_mesh_idx
+                                mesh_path = mesh_path_list[i]
+                                mesh = trimesh.load_mesh(mesh_path)
+
+                                c2w = np.eye(4)
+                                c2w[:3, :3] = R_c2w[i]
+                                c2w[:3, 3] = t_c2w[i]
+
+                                mesh.apply_transform(c2w)
+                                mesh_handle = client.scene.add_mesh_trimesh(
+                                    mesh_path,
+                                    mesh=mesh
+                                )
+
+                                self.render_tab_state.running_mesh_idx = (self.render_tab_state.running_mesh_idx + 1) % len(mesh_path_list)
+
+                            time.sleep(1 / 16)  # 1초 간격
+                            mesh_handle.remove()
+                    
+                    def start_render():
+                        if not self.render_tab_state.running_mesh:
+                            self.render_tab_state.running_mesh = True
+                            timer_thread = threading.Thread(target=render_next_mesh, daemon=True)
+                            timer_thread.start()
+                    start_render()
+
+                    print("Play SMPL-X")
+                
+                stop_playing_SMPL_button = server.gui.add_button(
+                    "Stop Playing SMPL",
+                    color="red",
+                    icon=viser.Icon.PLAYER_PLAY,
+                    hint="Stop Playing SMPL-X as mesh.",
+                )
+
+                @stop_playing_SMPL_button.on_click
+                def _(event: viser.GuiEvent) -> None:
+                    self.render_tab_state.running_mesh = False
+                
                 vis_SMPL_button = server.gui.add_button(
                     "Visualize SMPL",
                     color="white",
@@ -454,10 +531,9 @@ class GsplatViewer(Viewer):
 
                     indices_to_show = [0, 26, 42, 80]
                     # indices_to_show = [i for i in range(len(mesh_path_list))]
-                    mesh_path_list = [mesh_path_list[idx] for idx in indices_to_show]
 
-
-                    for i, mesh_path in enumerate(mesh_path_list):
+                    for i in indices_to_show:
+                        mesh_path = mesh_path_list[i]
                         mesh = trimesh.load_mesh(mesh_path)
 
                         c2w = np.eye(4)
@@ -509,7 +585,7 @@ class GsplatViewer(Viewer):
 
                     import cv2
                     N = len(os.listdir(cam_param_path))
-                    H, W = cv2.imread(os.path.join(frame1_path, '0.png')).shape[:2]
+                    H, W = cv2.imread(os.path.join(frame2_path, '0.png')).shape[:2]
 
                     cam_param_list = [os.path.join(cam_param_path, f'{i}.json') for i in range(len(os.listdir(cam_param_path)))]
                     cam_params = []
@@ -519,6 +595,7 @@ class GsplatViewer(Viewer):
                     depth1 = np.array([np.load(os.path.join(depth1_dir_path, f'{i}.npy'))[:, :, 0] for i in range(len(os.listdir(depth1_dir_path)))])
                     depth2 = np.array([cv2.resize(np.load(os.path.join(depth2_dir_path, f'{i}.npy')), (W, H)) for i in range(len(os.listdir(depth2_dir_path)))])
                     rgb1 = np.array([cv2.cvtColor(cv2.imread(os.path.join(frame1_path, f'{i}.png')), cv2.COLOR_BGR2RGB) for i in range(len(os.listdir(frame1_path)))])
+                    rgb1 = np.array([frame for frame in imageio.get_reader('/data/ckd248/SCVideo/HSI/fitting/data/Custom/data/bicycle_dataset_2d_detailed/scene_render_video.mp4')]) # (N, H, W, 3)
                     rgb2 = np.array([cv2.cvtColor(cv2.imread(os.path.join(frame2_path, f'{i}.png')), cv2.COLOR_BGR2RGB) for i in range(len(os.listdir(frame2_path)))])
 
                     R_c2w = np.array([cam_param['R'] for cam_param in cam_params]) # c2w
