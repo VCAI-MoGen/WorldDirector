@@ -162,7 +162,7 @@ class CharacterDataset(Dataset):
                 verts_norm  = (verts_smpl - p0) @ R0
             char_traj_norm = (raw_char_feature - p0) @ R0
             #6d rotation from normalized root pose
-            #R_norm = go_mat.transpose(-1,-2)@R0.transpose(-1,-2)
+            #R_norm = (go_mat.transpose(-1,-2)@R0).transpose(-1,-2)
             #rot6d = R_norm[:,:,2].permute(0,2,1).contiguous().reshape(B,6)
             t0 = p0
 
