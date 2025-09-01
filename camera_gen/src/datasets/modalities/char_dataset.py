@@ -119,7 +119,7 @@ class CharacterDataset(Dataset):
             lhand_pose_aa    = mat_to_aa(lhand_mat, 15)      # (Tp,45)
             rhand_pose_aa    = mat_to_aa(rhand_mat, 15)      # (Tp,45)
 
-            # align time
+            #align timestep
             def align_time(x, T):
                 if x.ndim == 1:
                     x = x.unsqueeze(0)
@@ -161,7 +161,11 @@ class CharacterDataset(Dataset):
             if self.load_vertices:
                 verts_norm  = (verts_smpl - p0) @ R0
             char_traj_norm = (raw_char_feature - p0) @ R0
+            #6d rotation from normalized root pose
+            #R_norm = go_mat.transpose(-1,-2)@R0.transpose(-1,-2)
+            #rot6d = R_norm[:,:,2].permute(0,2,1).contiguous().reshape(B,6)
             t0 = p0
+
 
         else:
             # if pkl files does not exist
@@ -182,7 +186,8 @@ class CharacterDataset(Dataset):
 
         if self.standardize:
             pass
-
+        #adding 6D rotation to charactr trajectory
+        #char_feature = torch.cat([char_feature,rot6d],dim=-1)
         padding_size = max(0, self.num_cams - char_feature.shape[0])
         padded_char_feature = F.pad(char_feature, (0, 0, 0, padding_size))
         padded_verts = F.pad(verts_norm, (0, 0, 0, 0, 0, padding_size))
