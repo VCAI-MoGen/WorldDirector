@@ -47,11 +47,9 @@ class CharacterDataset(Dataset):
         self.standardize = standardize
         if self.standardize:
             mean_std = kwargs["standardization"]
-            self.norm_mean = torch.tensor(mean_std["norm_mean_h"], dtype=torch.float32).unsqueeze(-1)
-            self.norm_std  = torch.tensor(mean_std["norm_std_h"],  dtype=torch.float32).unsqueeze(-1)
-            self.velocity = bool(mean_std.get("velocity", False))
-        else:
-            self.velocity = False
+            self.norm_mean = torch.Tensor(mean_std["norm_mean_h"])[:, None]
+            self.norm_std = torch.Tensor(mean_std["norm_std_h"])[:, None]
+            self.velocity = mean_std["velocity"]
 
         # device initialization
         self.device = torch.device("cpu")
@@ -94,7 +92,7 @@ class CharacterDataset(Dataset):
         t0 = torch.zeros(3, device=device)
 
         pkl_path = (self.vert_dir / filename).with_suffix(".pkl")
-        if self.load_vertices and os.path.exists(pkl_path):
+        if  os.path.exists(pkl_path):
             self.smpl_model = self.smpl_model.to(device)
 
             with open(pkl_path, "rb") as f:
@@ -153,22 +151,26 @@ class CharacterDataset(Dataset):
                     reye_pose=torch.zeros(B, 3),
                     expression=torch.zeros(B, 10),
                 )
-            verts_smpl  = out.vertices  # (B,V,3)
+            if self.load_vertices:
+                verts_smpl = out.vertices  # (B,V,3)
             joints_smpl = out.joints    # (B,J,3)
 
             #1st frame normalization
             p0 = joints_smpl[0, 0].detach()
-            R0 = go_mat[0].detach() if go_mat.shape == (Tp, 3, 3) else torch.eye(3)
-            verts_norm     = (verts_smpl - p0) @ R0
-            char_traj_norm = (raw_char_feature - p0) @ R0.T
+            R0 = go_mat[0].detach() 
+            if self.load_vertices:
+                verts_norm  = (verts_smpl - p0) @ R0
+            char_traj_norm = (raw_char_feature - p0) @ R0
             t0 = p0
 
-        elif self.load_vertices:
+        else:
             # if pkl files does not exist
             p0 = raw_char_feature[0].clone()
             with torch.no_grad():
-                verts_smpl = self.smpl_model(transl=raw_char_feature).vertices  # (B,V,3)
-            verts_norm     = verts_smpl - p0
+                out = self.smpl_model(transl=raw_char_feature) 
+            if self.load_vertices:
+                verts_smpl = out.vertices# (B,V,3)
+            verts_norm = verts_smpl - p0
             char_traj_norm = raw_char_feature - p0
             t0 = p0
 
@@ -199,6 +201,6 @@ class CharacterDataset(Dataset):
             padded_faces = faces.unsqueeze(0).expand(self.num_cams, -1, -1)
             raw_feats["char_vertices"] = padded_verts
             raw_feats["char_faces"] = padded_faces
-            raw_feats["char_root_ref"] = {"R0": R0, "t0": t0}
+        raw_feats["char_root_ref"] = {"R0": R0, "t0": t0}
 
         return char_filename, padded_char_feature, raw_feats
