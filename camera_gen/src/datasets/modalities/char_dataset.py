@@ -21,6 +21,18 @@ def export_mesh_ply(verts, faces, joints=None, out_dir="./debug_vis", prefix="se
             joint_path = os.path.join(output_dir, f"{prefix}_joint{i:03d}.ply")
             save_ply(joint_path, joints[i].cpu())
 
+
+def project_to_so3(R): # R: (...,3,3)
+    U, S, Vh = torch.linalg.svd(R)
+    Rproj = U @ Vh
+    # det 보정(음수면 마지막 축 반전)
+    det = torch.det(Rproj)
+    neg = det < 0
+    if neg.any():
+        U[neg, :, -1] *= -1
+        Rproj = U @ Vh
+    return Rproj
+
 class CharacterDataset(Dataset):
     def __init__(
         self,
@@ -100,24 +112,27 @@ class CharacterDataset(Dataset):
 
            
             body_mat  = torch.tensor(smpl_params["body_pose"],       dtype=torch.float32)    # (Tp,21,3,3)
-            lhand_mat = torch.tensor(smpl_params.get("left_hand_pose",  np.zeros((1,15,3,3))), dtype=torch.float32)
-            rhand_mat = torch.tensor(smpl_params.get("right_hand_pose", np.zeros((1,15,3,3))), dtype=torch.float32)
+            lhand_mat = torch.tensor(smpl_params["left_hand_pose"], dtype=torch.float32)
+            rhand_mat = torch.tensor(smpl_params["right_hand_pose"], dtype=torch.float32)
             go_mat    = torch.tensor(smpl_params["global_orient"],   dtype=torch.float32)    # (Tp,1,3,3) or (Tp,3,3)
-            betas     = torch.tensor(smpl_params.get("betas",  np.zeros((1,10))), dtype=torch.float32)   # (Tp,10) or (1,10)
-            transl    = torch.tensor(smpl_params.get("transl", np.zeros((1,3))),  dtype=torch.float32)   # (Tp,3)  or (1,3)
+            betas     = torch.tensor(smpl_params["betas"], dtype=torch.float32)   # (Tp,10) or (1,10)
+            transl    = torch.tensor(smpl_params["transl"],  dtype=torch.float32)   # (Tp,3)  or (1,3)
 
             # mat → axis-angle
-            def mat_to_aa(mat, J):
-                Tp = mat.shape[0]
-                return matrix_to_axis_angle(mat.reshape(Tp * J, 3, 3)).reshape(Tp, J * 3)
+            # def mat_to_aa(mat, J):
+            #     Tp = mat.shape[0]
+            #     return matrix_to_axis_angle(mat.reshape(Tp * J, 3, 3)).reshape(Tp, J * 3)
+            def mat_to_aa_safe(mat, J):
+                mat = project_to_so3(mat.reshape(-1, 3, 3)).reshape(*mat.shape)
+                return matrix_to_axis_angle(mat.reshape(-1, 3, 3)).reshape(mat.shape[0], J * 3)
 
             Tp = body_mat.shape[0]
             if go_mat.dim() == 4:  # (Tp,1,3,3) → (Tp,3,3)
                 go_mat = go_mat.squeeze(1)
-            global_orient_aa = matrix_to_axis_angle(go_mat)  # (Tp,3)
-            body_pose_aa     = mat_to_aa(body_mat, 21)       # (Tp,63)
-            lhand_pose_aa    = mat_to_aa(lhand_mat, 15)      # (Tp,45)
-            rhand_pose_aa    = mat_to_aa(rhand_mat, 15)      # (Tp,45)
+            global_orient_aa = mat_to_aa_safe(go_mat,1)  # (Tp,3)
+            body_pose_aa     = mat_to_aa_safe(body_mat, 21)       # (Tp,63)
+            lhand_pose_aa    = mat_to_aa_safe(lhand_mat, 15)      # (Tp,45)
+            rhand_pose_aa    = mat_to_aa_safe(rhand_mat, 15)      # (Tp,45)
 
             #align timestep
             def align_time(x, T):
@@ -162,7 +177,7 @@ class CharacterDataset(Dataset):
                 verts_norm  = (verts_smpl - p0) @ R0
             char_traj_norm = (raw_char_feature - p0) @ R0
             #6d rotation from normalized root pose
-            #R_norm = (go_mat.transpose(-1,-2)@R0).transpose(-1,-2)
+            #R_norm = go_mat.transpose(-1,-2)@R0.transpose(-1,-2)
             #rot6d = R_norm[:,:,2].permute(0,2,1).contiguous().reshape(B,6)
             t0 = p0
 
