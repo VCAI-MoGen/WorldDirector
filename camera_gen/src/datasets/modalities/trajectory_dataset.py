@@ -104,19 +104,19 @@ class TrajectoryDataset(Dataset):
                 t0 = self.external_ref_transl.to(raw_trans.device)
             else: 
                 t0 = raw_trans[0]
-
-        
-            raw_rot = raw_rot @ R0.transpose(-1,-2)
-            raw_trans = (raw_trans - t0) @ R0.transpose(-1,-2)
+                
+            # R0(3,3) p0(3,) raw_rot (300,3,3) raw_trans(300,3,)  
+            raw_rot = (raw_rot.transpose(-1,-2) @ R0).transpose(-1,-2)
+            raw_trans = (raw_trans - t0) @ R0
         
         if self.velocity:
             velocity = raw_trans[1:] - raw_trans[:-1]
             raw_trans = torch.cat([raw_trans[0][None], velocity])
-        # if self.standardize:
-        #     raw_trans[0] -= self.shift_mean
-        #     raw_trans[0] /= self.shift_std
-        #     raw_trans[1:] -= self.norm_mean
-        #     raw_trans[1:] /= self.norm_std
+        if self.standardize:
+            raw_trans[0] -= self.shift_mean
+            raw_trans[0] /= self.shift_std
+            raw_trans[1:] -= self.norm_mean
+            raw_trans[1:] /= self.norm_std
 
         rot6d = raw_rot[:, :, :2].permute(0, 2, 1).reshape(-1, 6)
 
