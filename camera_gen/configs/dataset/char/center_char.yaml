@@ -7,6 +7,6 @@ standardization: ${dataset.standardization}
 num_feats: ${eval:'3 if ${dataset.char.sequential} else ${dataset.num_cams} * 3'}
 num_cams: ${dataset.num_cams}
 sequential: ${diffuser.network.module.cond_sequential}
-num_vertices: null
-num_faces: null
+num_vertices: 10475
+num_faces: 20908
 load_vertices: false
