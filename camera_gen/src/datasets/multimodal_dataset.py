@@ -64,39 +64,34 @@ class MultimodalDataset(Dataset):
     # --------------------------------------------------------------------------------- #
 
     def __getitem__(self, index):
-       
-        char_key = None
+        R0=t0=None
+        char_key=None
         for k in self.modality_datasets.keys():
             if "char" in k:
-                char_key = k
+                char_key = k 
                 break
+        out={}
 
-        R0 = t0 = None
-        out = {}
-
-  
-        if char_key is not None:
+        if char_key is not None: 
             char_filename, char_feat, char_raw = self.modality_datasets[char_key][index]
-
-           
-            out[f"{char_key}_filename"] = char_filename
-            out[f"{char_key}_feat"] = char_feat
-            out[f"{char_key}_raw"] = char_raw
-
-            if isinstance(char_raw, dict):
-                R0 = char_raw["R0"]
-                t0 = char_raw["t0"]
-
-   
+            if isinstance(char_raw, dict) and "char_root_ref" in char_raw:
+                R0 = char_raw["char_root_ref"]["R0"]
+                t0 = char_raw["char_root_ref"]["t0"]
+                #del char_raw["char_root_ref"]
+            out.update({
+                f"{char_key}_filename" : char_filename,
+                f"{char_key}_feat" : char_feat,
+                f"{char_key}_raw" : char_raw,
+            })
+        else: 
+            out = {}
         if R0 is not None:
-            self.trajectory_dataset.init_external_reference(R0, t0)
-         
-   
-        traj_filename, traj_feature, padding_mask, intrinsics = self.trajectory_dataset[index]
+            self.trajectory_dataset.init_external_reference(R0,t0)
+        traj_out = self.trajectory_dataset[index]
+        traj_filename, traj_feature, padding_mask, intrinsics = traj_out
 
         self.trajectory_dataset.clear_external_reference()
 
- 
         out.update({
             "traj_filename": traj_filename,
             "traj_feat": traj_feature,
