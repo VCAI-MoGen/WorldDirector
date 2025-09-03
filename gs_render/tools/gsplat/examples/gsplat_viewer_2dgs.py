@@ -32,9 +32,11 @@ class GsplatRenderTabState(RenderTabState):
         "turbo", "viridis", "magma", "inferno", "cividis", "gray"
     ] = "turbo"
     # LCY
-    root_path: str = "/home/ckd248/data/SCVideo/HSI/fitting/data/Custom/data/bicycle_dataset_2d"
+    root_path: str = "/data/ckd248/SCVideo/data/room"
     running_mesh: bool = False
     running_mesh_idx: int = 0
+    start_point: Tuple[float, float] = (0.0, 0.0)
+    end_point: Tuple[float, float] = (0.0, 0.0)
 
 
 class GsplatViewer(Viewer):
@@ -216,6 +218,106 @@ class GsplatViewer(Viewer):
                 def _(_) -> None:
                     self.render_tab_state.root_path = root_path_input.value
 
+                pick_start_point_button = server.gui.add_button(
+                    "Pick Start point",
+                    color="red",
+                    icon=viser.Icon.CIRCLE_LETTER_S,
+                    hint="Pick Start point",
+                )
+                @pick_start_point_button.on_click
+                def _(event: viser.GuiEvent) -> None: 
+                    client = event.client
+                    assert client is not None
+                    scene = client.scene
+                    @scene.on_pointer_event(event_type='click')
+                    def _(event: viser.ScenePointerEvent) -> None: 
+                        screen_pos = event.screen_pos
+                        self.render_tab_state.start_point = screen_pos[0]
+                        print(f"start point: {self.render_tab_state.start_point}")
+                        scene.remove_pointer_callback()
+                    
+                
+                pick_end_point_button = server.gui.add_button(
+                    "Pick End point",
+                    color="blue",
+                    icon=viser.Icon.CIRCLE_LETTER_E,
+                    hint="Pick End point",
+                )
+                @pick_end_point_button.on_click
+                def _(event: viser.GuiEvent) -> None: 
+                    client = event.client
+                    assert client is not None
+                    scene = client.scene
+                    @scene.on_pointer_event(event_type='click')
+                    def _(event: viser.ScenePointerEvent) -> None: 
+                        screen_pos = event.screen_pos
+                        self.render_tab_state.end_point = screen_pos[0]
+                        print(f"end point: {self.render_tab_state.end_point}")
+                        scene.remove_pointer_callback()
+
+                dump_image_with_start_end_button = server.gui.add_button(
+                    "Dump Image (Start, End Points)",
+                    color="green",
+                    icon=viser.Icon.LIVE_PHOTO,
+                    hint="Dump the current render image as an image with start point and end point.",
+                )
+                @dump_image_with_start_end_button.on_click
+                def _(event: viser.GuiEvent) -> None:
+                    client = event.client
+                    assert client is not None
+                    root_path = self.render_tab_state.root_path
+                    self.render_tab_state.render_mode = "rgb"
+                    camera_state = self.get_camera_state(client) # c2w
+                    image_dir = os.path.join(root_path, "scene_render_image")
+                    os.makedirs(image_dir, exist_ok=True)
+                    # server.scene.set_global_visibility(False)
+                    image = client.get_render(
+                        height=self.render_tab_state.render_height,
+                        width=self.render_tab_state.render_width,
+                    )
+                    image_path = os.path.join(image_dir, 'render_image.png')
+                    imageio.imwrite(image_path, image)
+                    print(f"Save image in {image_path}\nRender resolution is {image.shape}")
+
+                    H, W, _ = image.shape
+                    start_point = self.render_tab_state.start_point
+                    end_point = self.render_tab_state.end_point
+
+                    image_with_start_point = image.copy()
+                    cv2.circle(image_with_start_point, (int(W * start_point[0]), int(H * start_point[1])), 10, (255, 0, 0), -1)
+                    image_path = os.path.join(image_dir, 'start_point.png')
+                    imageio.imwrite(image_path, image_with_start_point)
+
+                    image_with_end_point = image.copy()
+                    cv2.circle(image_with_end_point, (int(W * end_point[0]), int(H * end_point[1])), 10, (255, 0, 0), -1)
+                    image_path = os.path.join(image_dir, 'end_point.png')
+                    imageio.imwrite(image_path, image_with_end_point)
+
+                    cam_param_path = os.path.join(root_path, 'cam_params_scene')
+                    os.makedirs(cam_param_path, exist_ok=True)
+
+                    height = self.render_tab_state.render_height
+                    width = self.render_tab_state.render_width
+                    c2w = camera_state.c2w
+                    K = camera_state.get_K((width, height))
+
+                    R = c2w[:3, :3].tolist()
+                    t = c2w[:3, 3].tolist()
+                    focal = [K[0, 0], K[1, 1]]
+                    princpt = [width // 2, height // 2]
+
+                    cam_param = {
+                        "R": R,
+                        "t": t,
+                        "focal": focal,
+                        "princpt": princpt
+                    }
+                    for i in range(81):
+                        json_path = os.path.join(cam_param_path, f"{i}.json")
+                        with open(json_path, 'w') as f:
+                            json.dump(cam_param, f)
+                    print(f"Save cam_param in {cam_param_path}")
+                    
                 load_cam_params_button = server.gui.add_button(
                     "Load Camera Parameters",
                     color="yellow",
