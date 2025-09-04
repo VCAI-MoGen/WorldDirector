@@ -26,8 +26,7 @@ lr = args.learning_rate
 step_size = args.step_size
 depth_path = os.path.join(root_path, 'depths_vggt')
 mask_path = os.path.join(root_path, 'depths')
-scene_info_path = os.path.join(root_path, 'scene_gs')
-scene_depth_path = os.path.join(scene_info_path, 'depths_npy')
+scene_depth_path = os.path.join(root_path, 'depths_scene')
 
 device = "cuda:0"
 
@@ -226,18 +225,11 @@ else:
 print('prediction (max/min):', pred.max(), pred.min())
 print('pseudo depth (max/min):', depths.max(), depths.min())
 print('gt depth (max/min):', scene_depths.max(), scene_depths.min())
-pred_path = os.path.join(scene_info_path, 'optimized_depth.npy')
-np.save(pred_path, pred.detach().cpu().numpy())
-print(f"Save optimized depth in {pred_path}")
-
 
 # Visualization
-save_path = os.path.join(scene_info_path, 'visualization.png')
+save_path = os.path.join(root_path, 'depth_optimization_vis.png')
 target_depth = scene_depths.detach().cpu().numpy()
 optimized_depths = pred.detach().cpu().numpy()
-
-if target_depth.shape[0] == 1:
-    target_depth = target_depth[0]
 
 num_to_show = min(4, optimized_depths.shape[0])
 indices_to_show = np.linspace(0, optimized_depths.shape[0] - 1, num_to_show).astype(int).tolist()
