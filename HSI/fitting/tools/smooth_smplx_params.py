@@ -136,19 +136,20 @@ for frame_idx in frame_idx_list:
     keys = smplx_param.keys()
 
 # smooth smplx parameters
-for key in keys:
-    if 'pose' in key:
-        pose = np.stack([smplx_params[frame_idx][key].reshape(-1) for frame_idx in frame_idx_list])
-        pose = smoothen_poses(pose, window_length=args.smooth_length)
-        for i, frame_idx in enumerate(frame_idx_list):
-            smplx_params[frame_idx][key] = pose[i]
-            if key in ['body_pose', 'lhand_pose', 'rhand_pose']:
-                smplx_params[frame_idx][key] = smplx_params[frame_idx][key].reshape(-1,3)
-    else:
-        item = np.stack([smplx_params[frame_idx][key] for frame_idx in frame_idx_list])
-        item = savgol_filter(item, window_length=args.smooth_length, polyorder=2, axis=0)
-        for i, frame_idx in enumerate(frame_idx_list):
-            smplx_params[frame_idx][key] = item[i]
+if frame_num > 1:
+    for key in keys:
+        if 'pose' in key:
+            pose = np.stack([smplx_params[frame_idx][key].reshape(-1) for frame_idx in frame_idx_list])
+            pose = smoothen_poses(pose, window_length=args.smooth_length)
+            for i, frame_idx in enumerate(frame_idx_list):
+                smplx_params[frame_idx][key] = pose[i]
+                if key in ['body_pose', 'lhand_pose', 'rhand_pose']:
+                    smplx_params[frame_idx][key] = smplx_params[frame_idx][key].reshape(-1,3)
+        else:
+            item = np.stack([smplx_params[frame_idx][key] for frame_idx in frame_idx_list])
+            item = savgol_filter(item, window_length=args.smooth_length, polyorder=2, axis=0)
+            for i, frame_idx in enumerate(frame_idx_list):
+                smplx_params[frame_idx][key] = item[i]
 
 # save smoothed smplx parameters and meshes
 param_save_path = osp.join(root_path, smplx_dir, 'smplx_params_smoothed')
