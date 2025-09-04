@@ -444,10 +444,18 @@ class WanVace(WanT2V):
             masked_video = torch.stack(input_frames)
             mask_video = torch.stack(input_masks)
 
+            gray_frames = [torch.ones(input_frames[0].shape, device=input_frames[0].device) * -0.0118]
+            white_masks = [torch.ones(input_masks[0].shape, device=input_masks[0].device)]
+            z0_active = self.vace_encode_frames(gray_frames, input_ref_images, masks=white_masks)
+            m0_active = self.vace_encode_masks(white_masks, input_ref_images)
+            z_active = self.vace_latent(z0_active, m0_active)
+
             arg_c = {'context': context, 'seq_len': seq_len}
             arg_null = {'context': context_null, 'seq_len': seq_len}
 
             save_attn = False
+
+            print(timesteps)
 
             for idx, t in enumerate(tqdm(timesteps)):
                 latent_model_input = latents
@@ -455,6 +463,9 @@ class WanVace(WanT2V):
                 timestep = [t]
 
                 timestep = torch.stack(timestep)
+
+                if idx > 39:
+                    z = z_active
 
                 self.model.to(self.device)
                 noise_pred_cond = self.model(
