@@ -494,6 +494,8 @@ class GsplatViewer(Viewer):
                         with open(json_path, 'w') as f:
                             json.dump(cam_param, f)
                     
+                    print("Finish Dumping!")
+                    
                 load_cam_params_button = server.gui.add_button(
                     "Load Camera Parameters",
                     color="yellow",
