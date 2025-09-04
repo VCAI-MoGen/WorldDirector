@@ -124,7 +124,7 @@ os.chdir('..')
 
 # 3D GS training
 os.chdir('./gsplat')
-cmd = f'''bash -c '. ~/data/anaconda3/etc/profile.d/conda.sh && conda activate gsplat && python examples/simple_trainer.py  default --data_factor 1 --data_dir {scene_path} --result_dir {gs_path}' '''
+cmd = f'''bash -c '. ~/data/anaconda3/etc/profile.d/conda.sh && conda activate gsplat2 && python examples/simple_trainer_2dgs.py --data_factor 1 --data_dir {scene_path} --result_dir {gs_path}' '''
 print(cmd)
 result = os.system(cmd)
 if (result != 0):
