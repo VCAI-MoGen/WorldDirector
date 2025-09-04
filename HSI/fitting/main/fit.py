@@ -29,7 +29,7 @@ def rotation_6d_to_axis_angle(x):
 def main():
     args = parse_args()
     root_path = args.root_path
-    cfg.set_args(root_path.split('/')[-1])
+    cfg.set_args(root_path, root_path.split('/')[-1])
     
     trainer = Trainer(cfg=cfg)
     trainer._make_batch_generator()

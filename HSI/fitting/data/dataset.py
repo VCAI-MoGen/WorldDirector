@@ -17,7 +17,7 @@ import open3d as o3d
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, transform, cfg):
         self.cfg = cfg
-        self.root_path = osp.join('..', 'data', 'Custom', 'data', self.cfg.subject_id)
+        self.root_path = self.cfg.data_root_path
         self.transform = transform
         self.kpt = {
                     'num': 133,

@@ -58,7 +58,8 @@ class Config:
     ssim_loss_weight = 0.2
     lpips_weight = 0.2
 
-    def set_args(self, subject_id):
+    def set_args(self, data_root_path, subject_id):
+        self.data_root_path = data_root_path
         self.subject_id = subject_id
         self.result_dir = osp.join(self.result_dir, subject_id)
         os.makedirs(self.result_dir, exist_ok=True)
