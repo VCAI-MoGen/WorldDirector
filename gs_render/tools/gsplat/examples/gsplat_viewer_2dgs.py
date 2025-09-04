@@ -10,6 +10,53 @@ import json
 import trimesh
 import cv2
 
+def depth_to_world_pc(depth_map, K, R_c2w, t_c2w, screen_pos):
+    """
+    depth_map   : (H,W)
+    K           : (3,3) intrinsic matrix
+    R_c2w       : (3,3) camera-to-world rotation
+    t_c2w       : (3,)  camera-to-world translation
+    screen_pos  : (2,)
+
+    points      : (3,)
+    """
+    H, W = depth_map.shape
+    i, j = np.meshgrid(np.arange(W), np.arange(H))
+    z = depth_map
+    x = (i - K[0, 2]) * z / K[0, 0]
+    y = (j - K[1, 2]) * z / K[1, 1]
+    points = np.stack((x, y, z), axis=-1)
+    screen_pos = (int(screen_pos[0] * W), int(screen_pos[1] * H))
+    points = points[screen_pos[1], screen_pos[0], :]
+    points = R_c2w @ points.T + t_c2w
+    return points
+
+def project_points_to_image(points_world, K, R_c2w, t_c2w):
+    """
+    points_world : (N,3)
+    K           : (3,3) intrinsic matrix
+    R_c2w       : (3,3) camera-to-world rotation
+    t_c2w       : (3,)  camera-to-world translation
+
+    uv          : (N,2)
+    """
+
+    # world -> camera
+    R_w2c = R_c2w.T
+    t_w2c = -R_c2w.T @ t_c2w
+    X_c = (R_w2c @ points_world.T).T + t_w2c  # (N,3)
+
+    z = X_c[:, 2]
+    mask = z > 0
+
+    # homogeneous projection
+    uv = (K @ (X_c.T / z)).T  # (N,3)
+    uv = uv[:, :2]
+
+    uv[~mask] = np.nan
+
+    return uv
+
 
 class GsplatRenderTabState(RenderTabState):
     # non-controlable parameters
@@ -32,11 +79,12 @@ class GsplatRenderTabState(RenderTabState):
         "turbo", "viridis", "magma", "inferno", "cividis", "gray"
     ] = "turbo"
     # LCY
-    root_path: str = "/data/ckd248/SCVideo/data/room"
+    root_path: str = "/data/ckd248/SCVideo/data/bicycle"
     running_mesh: bool = False
     running_mesh_idx: int = 0
-    start_point: Tuple[float, float] = (0.0, 0.0)
-    end_point: Tuple[float, float] = (0.0, 0.0)
+    start_point: list[float, float, float] = [0.0, 0.0, 0.0]
+    end_point: list[float, float, float] = [0.0, 0.0, 0.0]
+    frame_num: int = 81
 
 
 class GsplatViewer(Viewer):
@@ -232,9 +280,38 @@ class GsplatViewer(Viewer):
                     @scene.on_pointer_event(event_type='click')
                     def _(event: viser.ScenePointerEvent) -> None: 
                         screen_pos = event.screen_pos
-                        self.render_tab_state.start_point = screen_pos[0]
-                        print(f"start point: {self.render_tab_state.start_point}")
+                        
                         scene.remove_pointer_callback()
+                        camera_state = self.get_camera_state(client) # c2w
+
+                        # Depth rendering
+                        self.render_tab_state.render_mode = "depth(precise)"
+                        server.scene.set_global_visibility(False)
+                        self.render_tab_state.preview_render = True
+                        depth = self.render_fn(camera_state, self.render_tab_state)
+                        self.render_tab_state.preview_render = False
+                        server.scene.set_global_visibility(True)
+                        depth_value = depth[:, :, 3:4]
+                        self.render_tab_state.render_mode = "rgb"
+
+                        H, W, _ = depth_value.shape
+
+                        c2w = camera_state.c2w
+                        K = camera_state.get_K((W, H))
+                        R = c2w[:3, :3]
+                        t = c2w[:3, 3]
+
+                        pc = depth_to_world_pc(depth_value[:, :, 0], K, R, t, screen_pos[0])
+                        self.render_tab_state.start_point = pc.tolist()
+                        print(f"start point: {self.render_tab_state.start_point}")
+
+                        scene.add_point_cloud(
+                            name='start point',
+                            points=pc[None],
+                            colors=(1.0, 0.0, 0.0),
+                            point_size=0.01,
+                            point_shape='circle'
+                        )
                     
                 
                 pick_end_point_button = server.gui.add_button(
@@ -251,9 +328,38 @@ class GsplatViewer(Viewer):
                     @scene.on_pointer_event(event_type='click')
                     def _(event: viser.ScenePointerEvent) -> None: 
                         screen_pos = event.screen_pos
-                        self.render_tab_state.end_point = screen_pos[0]
-                        print(f"end point: {self.render_tab_state.end_point}")
+                        
                         scene.remove_pointer_callback()
+                        camera_state = self.get_camera_state(client) # c2w
+
+                        # Depth rendering
+                        self.render_tab_state.render_mode = "depth(precise)"
+                        server.scene.set_global_visibility(False)
+                        self.render_tab_state.preview_render = True
+                        depth = self.render_fn(camera_state, self.render_tab_state)
+                        self.render_tab_state.preview_render = False
+                        server.scene.set_global_visibility(True)
+                        depth_value = depth[:, :, 3:4]
+                        self.render_tab_state.render_mode = "rgb"
+
+                        H, W, _ = depth_value.shape
+
+                        c2w = camera_state.c2w
+                        K = camera_state.get_K((W, H))
+                        R = c2w[:3, :3]
+                        t = c2w[:3, 3]
+
+                        pc = depth_to_world_pc(depth_value[:, :, 0], K, R, t, screen_pos[0])
+                        self.render_tab_state.end_point = pc.tolist()
+                        print(f"end point: {self.render_tab_state.end_point}")
+
+                        scene.add_point_cloud(
+                            name='end_point point',
+                            points=pc[None],
+                            colors=(0.0, 0.0, 1.0),
+                            point_size=0.01,
+                            point_shape='circle'
+                        )
 
                 dump_image_with_start_end_button = server.gui.add_button(
                     "Dump Image (Start, End Points)",
@@ -266,41 +372,107 @@ class GsplatViewer(Viewer):
                     client = event.client
                     assert client is not None
                     root_path = self.render_tab_state.root_path
-                    self.render_tab_state.render_mode = "rgb"
                     camera_state = self.get_camera_state(client) # c2w
-                    image_dir = os.path.join(root_path, "scene_render_image")
+
+                    static_dir_path = os.path.join(root_path, 'static')
+                    os.makedirs(static_dir_path, exist_ok=True)
+                    traj_dir_path = os.path.join(root_path, 'traj')
+                    os.makedirs(traj_dir_path, exist_ok=True)
+
+                    image_dir = os.path.join(static_dir_path, "scene_render_image")
                     os.makedirs(image_dir, exist_ok=True)
-                    # server.scene.set_global_visibility(False)
-                    image = client.get_render(
-                        height=self.render_tab_state.render_height,
-                        width=self.render_tab_state.render_width,
-                    )
+
+                    depth_dir_static = os.path.join(static_dir_path, "depth_scene")
+                    depth_vis_dir_static = os.path.join(static_dir_path, "depth_scene_vis")
+                    os.makedirs(depth_dir_static, exist_ok=True)
+                    os.makedirs(depth_vis_dir_static, exist_ok=True)
+
+                    depth_dir_traj = os.path.join(traj_dir_path, "depth_scene")
+                    depth_vis_dir_traj = os.path.join(traj_dir_path, "depth_scene_vis")
+                    os.makedirs(depth_dir_traj, exist_ok=True)
+                    os.makedirs(depth_vis_dir_traj, exist_ok=True)
+
+                    cam_param_path_static = os.path.join(static_dir_path, 'cam_params_scene')
+                    cam_param_path_traj = os.path.join(traj_dir_path, 'cam_params_scene')
+                    os.makedirs(cam_param_path_static, exist_ok=True)
+                    os.makedirs(cam_param_path_traj, exist_ok=True)
+
+                    height = self.render_tab_state.render_height
+                    width = self.render_tab_state.render_width
+
+                    # Render Image
+                    self.render_tab_state.render_mode = "rgb"
+                    server.scene.set_global_visibility(False)
+                    self.render_tab_state.preview_render = True
+                    image = self.render_fn(camera_state, self.render_tab_state)
+                    self.render_tab_state.preview_render = False
+                    server.scene.set_global_visibility(True)
+                    image = (image * 255).astype(np.uint8)
                     image_path = os.path.join(image_dir, 'render_image.png')
                     imageio.imwrite(image_path, image)
                     print(f"Save image in {image_path}\nRender resolution is {image.shape}")
 
                     H, W, _ = image.shape
-                    start_point = self.render_tab_state.start_point
-                    end_point = self.render_tab_state.end_point
+                    c2w = camera_state.c2w
+                    K = camera_state.get_K((width, height))
+                    R = c2w[:3, :3]
+                    t = c2w[:3, 3]
+
+                    points = np.array([self.render_tab_state.start_point, self.render_tab_state.end_point])
+                    uv = project_points_to_image(points, K, R, t)
+                    start_uv = uv[0].tolist()
+                    end_uv = uv[1].tolist()
 
                     image_with_start_point = image.copy()
-                    cv2.circle(image_with_start_point, (int(W * start_point[0]), int(H * start_point[1])), 10, (255, 0, 0), -1)
+                    cv2.circle(image_with_start_point, (int(start_uv[0]), int(start_uv[1])), 10, (255, 0, 0), -1)
                     image_path = os.path.join(image_dir, 'start_point.png')
                     imageio.imwrite(image_path, image_with_start_point)
 
                     image_with_end_point = image.copy()
-                    cv2.circle(image_with_end_point, (int(W * end_point[0]), int(H * end_point[1])), 10, (255, 0, 0), -1)
+                    cv2.circle(image_with_end_point, (int(end_uv[0]), int(end_uv[1])), 10, (255, 0, 0), -1)
                     image_path = os.path.join(image_dir, 'end_point.png')
                     imageio.imwrite(image_path, image_with_end_point)
 
-                    cam_param_path = os.path.join(root_path, 'cam_params_scene')
-                    os.makedirs(cam_param_path, exist_ok=True)
+                    # Save start/end point
+                    points_path = os.path.join(image_dir, 'points.json')
+                    points = {
+                        "start_point": self.render_tab_state.start_point,
+                        "end_point": self.render_tab_state.end_point
+                    }
+                    with open(points_path, 'w') as f:
+                        json.dump(points, f)
+                    print(f"Save points in {points_path}")
+                    print(f"Start point: {points["start_point"]}")
+                    print(f"End point: {points["end_point"]}")
 
-                    height = self.render_tab_state.render_height
-                    width = self.render_tab_state.render_width
-                    c2w = camera_state.c2w
-                    K = camera_state.get_K((width, height))
+                    # Render Depth
+                    self.render_tab_state.render_mode = "depth(precise)"
+                    server.scene.set_global_visibility(False)
+                    self.render_tab_state.preview_render = True
+                    depth = self.render_fn(camera_state, self.render_tab_state)
+                    self.render_tab_state.preview_render = False
+                    server.scene.set_global_visibility(True)
+                    self.render_tab_state.render_mode = "rgb"
+                    depth_value = depth[:, :, 3:4]
+                    depth = depth[:, :, 0:3]
+                    
+                    depth = (depth * 255).astype(np.uint8)
+                    depth_path = os.path.join(depth_vis_dir_static, '0.png')
+                    imageio.imwrite(depth_path, depth)
+                    depth_npy_path = os.path.join(depth_dir_static, '0.npy')
+                    np.save(depth_npy_path, depth_value)
+                    print(f"Save depth render in {depth_path}\nRender resolution is {depth.shape}")
+                    print(f"Save depth in {depth_npy_path}\nDepth resolution is {depth_value.shape}")
+                    print(f"Max depth: {depth_value.max()}")
+                    print(f"Min depth: {depth_value.min()}")
+                    
+                    for i in range(self.render_tab_state.frame_num):
+                        depth_path = os.path.join(depth_vis_dir_traj, f'{i}.png')
+                        imageio.imwrite(depth_path, depth)
+                        depth_npy_path = os.path.join(depth_dir_traj, f'{i}.npy')
+                        np.save(depth_npy_path, depth_value)
 
+                    # Save camera parameters
                     R = c2w[:3, :3].tolist()
                     t = c2w[:3, 3].tolist()
                     focal = [K[0, 0], K[1, 1]]
@@ -312,11 +484,15 @@ class GsplatViewer(Viewer):
                         "focal": focal,
                         "princpt": princpt
                     }
-                    for i in range(81):
-                        json_path = os.path.join(cam_param_path, f"{i}.json")
+                    json_path = os.path.join(cam_param_path_static, "0.json")
+                    with open(json_path, 'w') as f:
+                        json.dump(cam_param, f)
+                    print(f"Save cam_param in {json_path}")
+
+                    for i in range(self.render_tab_state.frame_num):
+                        json_path = os.path.join(cam_param_path_traj, f"{i}.json")
                         with open(json_path, 'w') as f:
                             json.dump(cam_param, f)
-                    print(f"Save cam_param in {cam_param_path}")
                     
                 load_cam_params_button = server.gui.add_button(
                     "Load Camera Parameters",
@@ -407,6 +583,7 @@ class GsplatViewer(Viewer):
                     self.render_tab_state.preview_render = True
                     depth = self.render_fn(camera_state, self.render_tab_state)
                     self.render_tab_state.preview_render = False
+                    server.scene.set_global_visibility(True)
                     depth_value = depth[:, :, 3:4]
                     depth = depth[:, :, 0:3]
                     
@@ -789,6 +966,7 @@ class GsplatViewer(Viewer):
                         self.render_tab_state.preview_render = True
                         depth = self.render_fn(camera_state, self.render_tab_state)
                         self.render_tab_state.preview_render = False
+                        server.scene.set_global_visibility(True)
                         depth_value = depth[:, :, 3:4]
                         depth = depth[:, :, 0:3]
                         
