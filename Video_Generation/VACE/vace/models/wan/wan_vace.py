@@ -454,6 +454,8 @@ class WanVace(WanT2V):
             arg_null = {'context': context_null, 'seq_len': seq_len}
 
             save_attn = False
+            active_last_step = False
+            active_step = 39
 
             print(timesteps)
 
@@ -464,7 +466,7 @@ class WanVace(WanT2V):
 
                 timestep = torch.stack(timestep)
 
-                if idx > 39:
+                if active_last_step and idx > active_step:
                     z = z_active
 
                 self.model.to(self.device)
