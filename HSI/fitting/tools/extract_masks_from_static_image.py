@@ -27,12 +27,14 @@ from utils.smpl_x import smpl_x
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root_path', type=str, dest='root_path')
+    parser.add_argument('--interpolate', action='store_true', dest='interpolate')
     args = parser.parse_args()
     assert args.root_path, "Please set root_path."
     return args
 
 args = parse_args()
 root_path = args.root_path
+interpolate_flag = args.interpolate
 
 def mask_to_bbox_mask(mask: np.ndarray) -> np.ndarray:
     """
@@ -167,7 +169,7 @@ root_cam = kpt_cam[:,smpl_x.kpt['root_idx'],:]
 mesh_cam = mesh_cam
 kpt_cam = kpt_cam
 
-    # traj video cam_param
+# traj video cam_param
 cam_param_path = os.path.join(cam_params_path, '0.json')
 with open(cam_param_path, 'r') as f:
     cam_param = json.load(f)
@@ -218,7 +220,11 @@ interpolated_mask = interpolated_mask[:, :, None]
 
 mask_frames.append(first_frame)
 for i in range(num_frames - 2):
-    mask_frames.append(interpolated_mask)
+    if interpolate_flag:
+        mask_frames.append(interpolated_mask)
+    else:
+        whole_mask = (np.ones(first_frame.shape) * 255).astype(np.uint8)
+        mask_frames.append(whole_mask)
 mask_frames.append(last_frame)
 
 for mask in mask_frames:
