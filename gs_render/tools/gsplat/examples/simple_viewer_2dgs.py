@@ -133,6 +133,11 @@ def main(local_rank: int, world_rank, world_size: int, args):
             )
             depth = depth.cpu().numpy()
             renders = np.concatenate((renders, depth), axis=-1)
+        elif render_tab_state.render_mode == "composition":
+            # normalize depth to [0, 1]
+            image = render_colors[0, ..., 0:3].clamp(0, 1).cpu().numpy()
+            depth = render_median[0].cpu().numpy()
+            renders = np.concatenate((image, depth), axis=-1)
         else:
             render_colors = render_colors[0, ..., 0:3].clamp(0, 1)
             renders = render_colors.cpu().numpy()

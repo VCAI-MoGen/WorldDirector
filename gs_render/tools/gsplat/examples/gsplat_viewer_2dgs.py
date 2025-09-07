@@ -71,7 +71,7 @@ class GsplatRenderTabState(RenderTabState):
     eps2d: float = 0.3
     backgrounds: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     render_mode: Literal[
-        "rgb", "depth(accumulated)", "depth(expected)", "alpha"
+        "rgb", "depth(accumulated)", "depth(expected)", "alpha", "composition"
     ] = "rgb"
     normalize_nearfar: bool = False
     inverse: bool = False
@@ -732,8 +732,14 @@ class GsplatViewer(Viewer):
 
                     self.update_camera(client, R_c2w[0], t_c2w[0], focal[0], princpt[0])
 
+                    c2w = np.zeros((R_c2w.shape[0], 4, 4))
+                    c2w[:, :3, :3] = R_c2w
+                    c2w[:, :3, 3] = t_c2w
+                    c2w[:, 3, 3] = 1.0
+
                     mesh_dir_path = os.path.join(self.render_tab_state.root_path, "smplx_optimized/meshes_smoothed")
                     mesh_path_list = [os.path.join(mesh_dir_path, f'{i}.ply') for i in range(len(os.listdir(mesh_dir_path)))]
+                    mesh_list = [trimesh.load_mesh(mesh_path).apply_transform(c2w[i]) for i, mesh_path in enumerate(mesh_path_list)]
 
                     import threading
                     import time
@@ -744,21 +750,22 @@ class GsplatViewer(Viewer):
                             with lock:
                                 i = self.render_tab_state.running_mesh_idx
                                 mesh_path = mesh_path_list[i]
-                                mesh = trimesh.load_mesh(mesh_path)
-
-                                c2w = np.eye(4)
-                                c2w[:3, :3] = R_c2w[i]
-                                c2w[:3, 3] = t_c2w[i]
-
-                                mesh.apply_transform(c2w)
+                                mesh = mesh_list[i]
                                 mesh_handle = client.scene.add_mesh_trimesh(
                                     mesh_path,
                                     mesh=mesh
                                 )
+                                camera_state = self.get_camera_state(client) # c2w
+                                self.render_tab_state.render_mode = 'composition'
+
+                                renders = self.render_fn(camera_state, self.render_tab_state)
+                                img = renders[:, :, 0:3]
+                                depth = renders[:, :, 3:4]
+                                client.scene.set_background_image(img, depth=depth)
 
                                 self.render_tab_state.running_mesh_idx = (self.render_tab_state.running_mesh_idx + 1) % len(mesh_path_list)
 
-                            time.sleep(1 / 16)  # 1초 간격
+                            time.sleep(1 / 30)  # 1초 간격
                             mesh_handle.remove()
                     
                     def start_render():
