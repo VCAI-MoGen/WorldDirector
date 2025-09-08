@@ -19,6 +19,7 @@ MeshRenderer,
 MeshRendererWithFragments,
 MeshRasterizer,
 TexturesVertex)
+from pytorch3d.transforms import matrix_to_axis_angle
 import sys
 sys.path.insert(0, os.path.join('..', 'main'))
 sys.path.insert(0, os.path.join('..', 'common'))
@@ -95,20 +96,6 @@ def render_mesh_and_mask(mesh, face, cam_param, bkg, blend_ratio=1.0):
     render = fg * is_fg + bkg * (1 - is_fg)
     return render.astype(np.uint8), mask.astype(np.uint8)
 
-
-def rotation_axis_angle(from_vec, to_vec):
-    from_vec = from_vec / np.linalg.norm(from_vec)
-    to_vec = to_vec / np.linalg.norm(to_vec)
-
-    axis = np.cross(from_vec, to_vec)
-    axis_norm = np.linalg.norm(axis)
-    if axis_norm < 1e-8:
-        return np.zeros(3)  # 회전 없음
-    axis = axis / axis_norm
-
-    angle = np.arccos(np.clip(np.dot(from_vec, to_vec), -1.0, 1.0))
-    return axis * angle
-
 def mask_to_bbox(mask):
     ys, xs = np.where(mask > 0)
     x1, y1, x2, y2 = xs.min(), ys.min(), xs.max(), ys.max()
@@ -128,6 +115,25 @@ def bbox_to_mask(bbox, shape):
     cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
     return mask
 
+def rotation_for_billboarding(obj_pos, cam_pos):
+    obj_pos = torch.tensor(obj_pos)
+    cam_pos = torch.tensor(cam_pos)
+
+    forward = obj_pos - cam_pos
+    forward = forward / torch.norm(forward)
+    forward = forward.float()
+
+    up = torch.tensor([0.0, 1.0, 0.0]).float()
+
+    right = torch.cross(up, forward)
+    right = right / torch.norm(right)
+
+    true_up = torch.cross(forward, right)
+
+    R = torch.stack([right, true_up, forward], dim=1).float()  # 3x3
+    return R
+
+device = "cuda:0"
 static_root_path = os.path.join(root_path, 'static')
 traj_root_path = os.path.join(root_path, 'traj')
 cam_params_path = os.path.join(static_root_path, 'cam_params_scene')
@@ -146,45 +152,54 @@ human_render_image_path = os.path.join(traj_root_path, 'human_render_image.png')
 
 cam_params_list = glob(os.path.join(cam_params_path, '*.json'))
 
+# traj video cam_param
+cam_param_path = os.path.join(cam_params_path, '0.json')
+with open(cam_param_path, 'r') as f:
+    cam_param = json.load(f)
+
+R_c2w = np.array(cam_param['R']) # (3, 3)
+t_c2w = np.array(cam_param['t']) # (3,)
+R_w2c = R_c2w.T
+t_w2c = -R_c2w.T @ t_c2w
+
+start_point = np.array(points["start_point"])
+end_point = np.array(points["end_point"])
+start_point_cam = R_w2c @ start_point + t_w2c
+end_point_cam = R_w2c @ end_point + t_w2c
+print(f"Start point position in camera coordinate system: {start_point_cam}")
+print(f"End point position in camera coordinate system: {end_point_cam}")
+
 axis = np.array([1, 0, 0]).astype(np.float32)
 angle = np.pi
-axis_angle = (axis * angle)[None]
+yz_inv_axis_angle = torch.tensor((axis * angle))[None]
 
 with torch.no_grad():
     output = smpl_x.layer['neutral'](
-                            global_orient = torch.tensor(axis_angle), \
-                            body_pose = torch.zeros((1, 21, 3)), \
-                            jaw_pose = torch.zeros((1, 3)), \
-                            leye_pose = torch.zeros((1, 3)), \
-                            reye_pose = torch.zeros((1, 3)), \
-                            left_hand_pose = torch.zeros((1, 15, 3)), \
-                            right_hand_pose = torch.zeros((1, 15, 3)), \
-                            expression = torch.zeros((1, 10)), \
+                            global_orient = torch.stack([yz_inv_axis_angle, yz_inv_axis_angle]), \
+                            body_pose = torch.zeros((2, 21, 3)), \
+                            jaw_pose = torch.zeros((2, 3)), \
+                            leye_pose = torch.zeros((2, 3)), \
+                            reye_pose = torch.zeros((2, 3)), \
+                            left_hand_pose = torch.zeros((2, 15, 3)), \
+                            right_hand_pose = torch.zeros((2, 15, 3)), \
+                            expression = torch.zeros((2, 10)), \
                             # transl = torch.FloatTensor(smplx_param['trans']).view(1,-1), \
                             betas = shape_param.view(1, -1), \
                             )
 mesh_cam = output.vertices * smplx_scale[None, None, :]
 kpt_cam = output.joints[:,smpl_x.kpt['idx'],:] * smplx_scale[None, None, :]
 root_cam = kpt_cam[:,smpl_x.kpt['root_idx'],:]
-mesh_cam = mesh_cam
-kpt_cam = kpt_cam
 
-# traj video cam_param
-cam_param_path = os.path.join(cam_params_path, '0.json')
-with open(cam_param_path, 'r') as f:
-    cam_param = json.load(f)
+mesh_cam = mesh_cam - root_cam[:, None, :]
+kpt_cam = kpt_cam - root_cam[:, None, :]
 
-R_c2w = torch.tensor(cam_param['R']).to(mesh_cam.device) # (3, 3)
-t_c2w = torch.tensor(cam_param['t']).to(mesh_cam.device) # (3,)
-R_w2c = R_c2w.T
-t_w2c = -R_c2w.T @ t_c2w
+R_start = rotation_for_billboarding(start_point_cam, [0.0, 0.0, 0.0])
 
-start_point = torch.tensor(points["start_point"], device=mesh_cam.device)
-end_point = torch.tensor(points["end_point"], device=mesh_cam.device)
-start_point_cam = R_w2c @ start_point + t_w2c
-end_point_cam = R_w2c @ end_point + t_w2c
-
-verts = mesh_cam[0] - root_cam[0] + start_point_cam
+start_point_cam = torch.tensor(start_point_cam)
+verts = mesh_cam[0]
+verts = (R_start @ verts.T).T
+verts = verts + start_point_cam
+verts = verts.float()
 
 img_path = os.path.join(static_root_path, 'scene_render_image', 'render_image.png')
 img = imageio.imread(img_path)
@@ -192,7 +207,13 @@ img = imageio.imread(img_path)
 combined_start_point, mask_start = render_mesh_and_mask(verts, smpl_x.face, cam_param, img)
 imageio.imwrite('render_start.png', combined_start_point)
 
-verts = mesh_cam[0] - root_cam[0] + end_point_cam
+R_end = rotation_for_billboarding(end_point_cam, [0.0, 0.0, 0.0])
+
+end_point_cam = torch.tensor(end_point_cam)
+verts = mesh_cam[1]
+verts = (R_end @ verts.T).T
+verts = verts + end_point_cam
+verts = verts.float()
 
 img_path = os.path.join(static_root_path, 'scene_render_image', 'render_image.png')
 img = imageio.imread(img_path)
