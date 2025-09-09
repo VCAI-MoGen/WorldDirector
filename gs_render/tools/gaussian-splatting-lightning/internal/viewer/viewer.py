@@ -53,6 +53,7 @@ class Viewer:
             vanilla_mip: bool = False,
             vanilla_pvg: bool = False,
             difix: bool = False,
+            root_path: str = "Default"
     ):
         self.device = torch.device("cuda")
 
@@ -259,6 +260,7 @@ class Viewer:
         )
 
         self.clients = {}
+        self.root_path = root_path
 
     @staticmethod
     def _search_load_file(model_path: str) -> str:
