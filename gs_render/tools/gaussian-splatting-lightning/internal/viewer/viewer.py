@@ -14,7 +14,7 @@ from internal.renderers import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.gaussian_model_editor import MultipleGaussianModelEditor
 from internal.viewer import ClientThread, ViewerRenderer
-from internal.viewer.ui import populate_render_tab, TransformPanel, EditPanel
+from internal.viewer.ui import populate_render_tab, TransformPanel, EditPanel, ScPanel
 from internal.viewer.ui.up_direction_folder import UpDirectionFolder
 
 DROPDOWN_USE_DIRECT_APPEARANCE_EMBEDDING_VALUE = "@Direct"
@@ -42,6 +42,7 @@ class Viewer:
             default_camera_look_at: List[float] = None,
             no_edit_panel: bool = False,
             no_render_panel: bool = False,
+            no_sc_panel: bool = False,
             demo_mode: bool = False,
             gsplat: bool = False,
             gsplat_aa: bool = False,
@@ -83,6 +84,9 @@ class Viewer:
         self.show_render_panel = True
         if no_render_panel is True or demo_mode:
             self.show_render_panel = False
+        self.show_sc_panel = True
+        if no_sc_panel is True or demo_mode:
+            self.show_sc_panel = True
 
         def turn_off_edit_and_video_render_panel():
             self.show_edit_panel = False
@@ -692,6 +696,10 @@ class Viewer:
                     server=server,
                     tab=tab,
                 )
+
+        if self.show_sc_panel is True:
+            with tabs.add_tab("SC") as sc_tab:
+                self.sc_panel = ScPanel(server, self, sc_tab)
 
         if enable_renderer_options is True and not self.demo_mode:
             self.viewer_renderer.renderer.setup_web_viewer_tabs(self, server, tabs)
