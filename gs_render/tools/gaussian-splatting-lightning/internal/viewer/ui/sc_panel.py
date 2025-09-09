@@ -207,8 +207,8 @@ class ScPanel:
                 print(f"End point: {points["end_point"]}")
 
                 # Save camera parameters
-                R = c2w[:3, :3].tolist()
-                t = c2w[:3, 3].tolist()
+                R = c2w[:3, :3].T.tolist() # w2c
+                t = (-c2w[:3, :3].T @ c2w[:3, 3]).tolist() # w2c
                 focal = [K[0, 0], K[1, 1]]
                 princpt = [render_wh[0] // 2, render_wh[1] // 2]
 
@@ -232,7 +232,58 @@ class ScPanel:
     
     def _setup_refine_folder(self):
         with self.server.gui.add_folder("Refine"):
-            dummy_button = self.server.gui.add_button("Dummy")
+            load_cam_params_button = self.server.gui.add_button(
+                "Load Camera Parameters",
+                color="yellow",
+                icon=viser.Icon.FOLDER_OPEN,
+                hint="Load a camera parameter",
+            )
+
+            @load_cam_params_button.on_click
+            def _(event: viser.GuiEvent) -> None: 
+                client = event.client
+                assert client is not None
+
+                cam_param_dir_path = self.cam_param_path_detailed
+                cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
+                cameras = self.get_cameras_from_json(cam_params_path)
+
+                # Render Video
+                self.server.scene.set_global_visibility(False)
+                image = self.render(cameras, render_mode="rgb") # (N, H, W, 3)
+                self.server.scene.set_global_visibility(True)
+                render_video_path = os.path.join(self.detailed_dir_path, 'scene_render_video.mp4')
+                imageio.mimsave(render_video_path, image)
+                print(f"Video saved in {render_video_path}")
+
+            dump_depth_video_button = self.server.gui.add_button(
+                "Dump Depth Video",
+                color="black",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="Dump the trajectory as a depth video.",
+            )
+            @dump_depth_video_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                client = event.client
+                assert client is not None
+
+                cam_param_dir_path = self.cam_param_path_detailed
+                cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
+                cameras = self.get_cameras_from_json(cam_params_path)
+
+                # Render Depth
+                self.server.scene.set_global_visibility(False)
+                depth = self.render(cameras, render_mode="exp_depth")
+                depth_value = depth[:, :, :, 0:1] # (N, H, W, 1)
+                depth_map = depth[:, :, :, 1:].astype(np.uint8) # (N, H, W, 3)
+                self.server.scene.set_global_visibility(True)
+                
+                for i in range(depth.shape[0]):
+                    depth_path = os.path.join(self.depth_vis_dir_detailed, f'{i}.png')
+                    imageio.imwrite(depth_path, depth_map[i])
+                    depth_npy_path = os.path.join(self.depth_dir_detailed, f'{i}.npy')
+                    np.save(depth_npy_path, depth_value[i])
+                print("Depths are saved...")
 
     def _setup_vis_folder(self):
         with self.server.gui.add_folder("Visualization"):
@@ -246,15 +297,20 @@ class ScPanel:
         
         self.static_dir_path = os.path.join(root_path, 'static')
         self.traj_dir_path = os.path.join(root_path, 'traj')
+        self.detailed_dir_path = os.path.join(root_path, 'detailed')
 
         self.image_dir = os.path.join(self.static_dir_path, "scene_render_image")
+
         self.depth_dir_static = os.path.join(self.static_dir_path, "depth_scene")
         self.depth_vis_dir_static = os.path.join(self.static_dir_path, "depth_scene_vis")
         self.depth_dir_traj = os.path.join(self.traj_dir_path, "depth_scene")
         self.depth_vis_dir_traj = os.path.join(self.traj_dir_path, "depth_scene_vis")
+        self.depth_dir_detailed = os.path.join(self.detailed_dir_path, "depth_scene")
+        self.depth_vis_dir_detailed = os.path.join(self.detailed_dir_path, "depth_scene_vis")
 
         self.cam_param_path_static = os.path.join(self.static_dir_path, 'cam_params_scene')
         self.cam_param_path_traj = os.path.join(self.traj_dir_path, 'cam_params_scene')
+        self.cam_param_path_detailed = os.path.join(self.detailed_dir_path, 'cam_params_scene')
 
         os.makedirs(self.static_dir_path, exist_ok=True)
         os.makedirs(self.traj_dir_path, exist_ok=True)
@@ -262,9 +318,12 @@ class ScPanel:
         os.makedirs(self.depth_dir_static, exist_ok=True)
         os.makedirs(self.depth_vis_dir_static, exist_ok=True)
         os.makedirs(self.depth_dir_traj, exist_ok=True)
-        os.makedirs(self.depth_vis_dir_traj, exist_ok=True)     
+        os.makedirs(self.depth_vis_dir_traj, exist_ok=True)
+        os.makedirs(self.depth_dir_detailed, exist_ok=True)
+        os.makedirs(self.depth_vis_dir_detailed, exist_ok=True)
         os.makedirs(self.cam_param_path_static, exist_ok=True)
         os.makedirs(self.cam_param_path_traj, exist_ok=True)
+        os.makedirs(self.cam_param_path_detailed, exist_ok=True)
 
     def get_current_camera(self, client: viser.ClientHandle):
         camera = client.camera
@@ -302,18 +361,54 @@ class ScPanel:
         c2w, fov = self.get_current_camera(client) # (4, 4), float
         K = self.get_K(fov, img_wh) # (3, 3)
 
-        R = torch.tensor(c2w[:3, :3]).T[None].cuda() # w2c
-        t = torch.tensor(-c2w[:3, :3].T @ c2w[:3, 3])[None].cuda() # w2c
-        fx = torch.tensor(K[0][0])[None].cuda()
-        fy = torch.tensor(K[1][1])[None].cuda()
-        cx = torch.tensor(K[0][2])[None].cuda()
-        cy = torch.tensor(K[1][2])[None].cuda()
-        width = torch.tensor(int(cx * 2), dtype=torch.int)[None].cuda()
-        height = torch.tensor(int(cy * 2), dtype=torch.int)[None].cuda()
-        appearance_id = torch.zeros(1, dtype=torch.int).cuda(),
-        normalized_appearance_id = torch.zeros(1, dtype=torch.int).cuda(),
-        distortion_params = torch.zeros((1, 4), dtype=torch.int).cuda(),
-        camera_type = torch.zeros(1, dtype=torch.int).cuda()
+        R = torch.tensor(c2w[:3, :3]).T[None] # w2c
+        t = torch.tensor(-c2w[:3, :3].T @ c2w[:3, 3])[None] # w2c
+        fx = torch.tensor(K[0][0])[None]
+        fy = torch.tensor(K[1][1])[None]
+        cx = torch.tensor(K[0][2])[None]
+        cy = torch.tensor(K[1][2])[None]
+        width = torch.tensor(int(cx * 2), dtype=torch.int)[None]
+        height = torch.tensor(int(cy * 2), dtype=torch.int)[None]
+        appearance_id = torch.zeros(1, dtype=torch.int)
+        normalized_appearance_id = torch.zeros(1, dtype=torch.int)
+        distortion_params = torch.zeros((1, 4), dtype=torch.int)
+        camera_type = torch.zeros(1, dtype=torch.int)
+
+        camera = Cameras(
+            R=R,
+            T=t,
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
+            width=width,
+            height=height,
+            appearance_id=appearance_id,
+            normalized_appearance_id=normalized_appearance_id,
+            distortion_params=distortion_params,
+            camera_type=camera_type
+        )
+        return camera
+
+    def get_cameras_from_json(self, cam_params_path):
+        cam_params = []
+        for i, cam_param_path in enumerate(cam_params_path):
+            with open(cam_param_path, 'r') as f:
+                cam_param = json.load(f)
+            cam_params.append(cam_param)
+        N = len(cam_params)
+        R = torch.tensor([cam_param['R'] for cam_param in cam_params])
+        t = torch.tensor([cam_param['t'] for cam_param in cam_params])
+        fx = torch.tensor([cam_param['focal'][0] for cam_param in cam_params])
+        fy = torch.tensor([cam_param['focal'][1] for cam_param in cam_params])
+        cx = torch.tensor([cam_param['princpt'][0] for cam_param in cam_params])
+        cy = torch.tensor([cam_param['princpt'][1] for cam_param in cam_params])
+        width = torch.tensor(cx * 2, dtype=torch.int)
+        height = torch.tensor(cy * 2, dtype=torch.int)
+        appearance_id = torch.zeros(N, dtype=torch.int)
+        normalized_appearance_id = torch.zeros(N, dtype=torch.int)
+        distortion_params = torch.zeros((N, 4), dtype=torch.int)
+        camera_type = torch.zeros(N, dtype=torch.int)
 
         camera = Cameras(
             R=R,
@@ -352,6 +447,7 @@ class ScPanel:
                 depth_map = cv2.applyColorMap((depth_map.clip(0.0, 1.0) * 255).astype(np.uint8), cv2.COLORMAP_JET)
                 render = np.concatenate([depth[:, :, 0:1], depth_map], axis=-1) # (H, W, 4)
             renders.append(render)
+        renders = np.array(renders)
         return renders
 
 def depth_to_world_pc(depth_map, K, R_c2w, t_c2w, screen_pos=None):
