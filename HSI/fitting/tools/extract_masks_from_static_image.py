@@ -157,10 +157,8 @@ cam_param_path = os.path.join(cam_params_path, '0.json')
 with open(cam_param_path, 'r') as f:
     cam_param = json.load(f)
 
-R_c2w = np.array(cam_param['R']) # (3, 3)
-t_c2w = np.array(cam_param['t']) # (3,)
-R_w2c = R_c2w.T
-t_w2c = -R_c2w.T @ t_c2w
+R_w2c = np.array(cam_param['R']) # (3, 3)
+t_w2c = np.array(cam_param['t']) # (3,)
 
 start_point = np.array(points["start_point"])
 end_point = np.array(points["end_point"])

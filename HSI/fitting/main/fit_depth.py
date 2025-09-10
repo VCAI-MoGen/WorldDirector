@@ -185,7 +185,7 @@ else:
 
         cam_param_scene = cam_params_scene[i]
         scene_depth = scene_depths[i].detach().cpu().numpy()
-        gt_pc = depth_to_pc_world(scene_depth, cam_param_scene, c2w=True)
+        gt_pc = depth_to_pc_world(scene_depth, cam_param_scene, c2w=False)
 
         pseudo_pcs.append(pseudo_pc)
         gt_pcs.append(gt_pc)
@@ -218,7 +218,7 @@ else:
     print("Depth Rendering from Point Cloud...")
     for i in range(len(cam_params_scene)):
         cam_param_scene = cam_params_scene[i]
-        depth = pc_world_to_depth(pred_pc, cam_param_scene, w2c=False, device=device)
+        depth = pc_world_to_depth(pred_pc, cam_param_scene, w2c=True, device=device)
         pred.append(depth)
     pred = torch.stack(pred)
 

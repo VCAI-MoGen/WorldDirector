@@ -123,11 +123,11 @@ for frame_idx in tqdm(frame_idx_list):
     # Load verts, faces from ply (camera coordinate in traj video)
     verts, faces = load_ply_mesh(ply_path)
     
-    R_c2w = torch.tensor(cam_param['R']).to(verts.device) # (3, 3)
-    t_c2w = torch.tensor(cam_param['t']).to(verts.device) # (3,)
+    R_c2w = torch.tensor(cam_param['R']).T.to(verts.device) # (3, 3)
+    t_c2w = -R_c2w @ torch.tensor(cam_param['t']).to(verts.device) # (3,)
 
-    R_w2c = torch.tensor(target_cam_param['R']).to(verts.device).T # (3, 3)
-    t_w2c = -R_w2c @ torch.tensor(target_cam_param['t']).to(verts.device) # (3,)
+    R_w2c = torch.tensor(target_cam_param['R']).to(verts.device) # (3, 3)
+    t_w2c = torch.tensor(target_cam_param['t']).to(verts.device) # (3,)
 
     # 1. initial verts are in camera coordinate
     # 2. transform to world coordinate
