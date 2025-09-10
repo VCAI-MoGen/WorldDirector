@@ -189,41 +189,4 @@ if (result != 0):
     print('something bad happened when smoothing smplx parameters. terminate the script.')
     sys.exit()
 
-# visualize human-scene aligned motion
-cmd = 'python vis_motion.py --root_path ' + root_path
-print(cmd)
-result = os.system(cmd)
-if (result != 0):
-    print('something bad happened when visualizing. terminate the script.')
-    sys.exit()
-
-"""
-# make human trajectory aligned with 3D scene
-os.chdir('../main')
-cmd = 'python get_human_traj.py --root_path ' + root_path
-print(cmd)
-result = os.system(cmd)
-if (result != 0):
-    print('something bad happened when fitting. terminate the script.')
-    sys.exit()
-os.chdir('../tools')
-"""
-if vis_all:
-    # make vggt depth video
-    os.chdir('./vggt')
-    cmd = 'python run_vggt.py --root_path ' + root_path + ' --make_depth_video'
-    print(cmd)
-    result = os.system(cmd)
-    if (result != 0):
-        print('something bad happened when running vggt to get camera parameters. terminate the script.')
-        sys.exit()
-    os.chdir('../')
-
-    # make output_grid.mp4
-    cmd = 'python vis_all.py --root_path ' + root_path
-    print(cmd)
-    result = os.system(cmd)
-    if (result != 0):
-        print('something bad happened when visualizing. terminate the script.')
-        sys.exit()
     

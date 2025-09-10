@@ -211,7 +211,7 @@ class Model_image(nn.Module):
         human_mask = data['mask'][:, None, :, :]
             
         # For Deubgging
-
+        """
         debug_id = 1
         import numpy as np
         import cv2
@@ -221,7 +221,7 @@ class Model_image(nn.Module):
         sorted_depth = data['depth_vggt'][sorted_idx].detach().cpu().numpy()
         np.save(f'vggt_depth{debug_id}.npy', sorted_depth)
         print(f"Depth{debug_id} saved...")
-        
+        """
         if cfg.use_gs_loss:
             scene_human_renders, human_renders, scene_renders = self.forward_gs(smplx_inputs, data, bg)
 
