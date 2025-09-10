@@ -137,7 +137,7 @@ device = "cuda:0"
 static_root_path = os.path.join(root_path, 'static')
 traj_root_path = os.path.join(root_path, 'traj')
 cam_params_path = os.path.join(static_root_path, 'cam_params_scene')
-point_path = os.path.join(static_root_path, 'scene_render_image', 'points.json')
+point_path = os.path.join(static_root_path, 'points.json')
 with open(point_path, 'r') as f:
     points = json.load(f)
 smplx_scale = torch.tensor([1.0])
@@ -199,11 +199,11 @@ verts = (R_start @ verts.T).T
 verts = verts + start_point_cam
 verts = verts.float()
 
-img_path = os.path.join(static_root_path, 'scene_render_image', 'render_image.png')
+img_path = os.path.join(static_root_path, 'scene_renders', '0.png')
 img = imageio.imread(img_path)
 
 combined_start_point, mask_start = render_mesh_and_mask(verts, smpl_x.face, cam_param, img)
-imageio.imwrite('render_start.png', combined_start_point)
+imageio.imwrite(os.path.join(traj_root_path, 'start_smpl.png'), combined_start_point)
 
 R_end = rotation_for_billboarding(end_point_cam, [0.0, 0.0, 0.0])
 
@@ -213,11 +213,8 @@ verts = (R_end @ verts.T).T
 verts = verts + end_point_cam
 verts = verts.float()
 
-img_path = os.path.join(static_root_path, 'scene_render_image', 'render_image.png')
-img = imageio.imread(img_path)
-
 combined_end_point, mask_end = render_mesh_and_mask(verts, smpl_x.face, cam_param, img)
-imageio.imwrite('render_end.png', combined_end_point)
+imageio.imwrite(os.path.join(traj_root_path, 'end_smpl.png'), combined_end_point)
 
 num_frames = 81
 mask_frames = []
