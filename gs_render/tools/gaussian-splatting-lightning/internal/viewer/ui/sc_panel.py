@@ -2,7 +2,7 @@ import traceback
 import datetime
 import os.path
 from typing import Tuple
-from internal.cameras.cameras import Cameras
+from internal.cameras.cameras import Cameras, Camera
 
 import torch
 import numpy as np
@@ -12,6 +12,8 @@ import re
 import imageio
 import json
 import cv2
+import trimesh
+from scipy.spatial.transform import Rotation
 
 class ScPanel:
     def __init__(
@@ -29,8 +31,15 @@ class ScPanel:
         self.frame_num = 81
         self.render_mode = "rgb"
         self.root_path = self.viewer.root_path
+        self.data_type_list = ["static", "traj", "detailed"]
 
+        self.current_data_type = self.data_type_list[0]
+
+        self.running_mesh = False
+        self.running_mesh_idx = 0
+        
         self._build_data_dir()
+        self._set_vis_path()
 
         self.start_point = (0.0, 0.0, 0.0)
         self.end_point = (0.0, 0.0, 0.0)
@@ -49,6 +58,8 @@ class ScPanel:
         @root_path_input.on_update
         def _(_) -> None:
             self.root_path = root_path_input.value
+            self._build_data_dir()
+            self._set_vis_path()
 
     def _setup_traj_folder(self):
         with self.server.gui.add_folder("Traj"):
@@ -253,8 +264,10 @@ class ScPanel:
                 image = self.render(cameras, render_mode="rgb") # (N, H, W, 3)
                 self.server.scene.set_global_visibility(True)
                 render_video_path = os.path.join(self.detailed_dir_path, 'scene_render_video.mp4')
-                imageio.mimsave(render_video_path, image)
+                imageio.mimsave(render_video_path, image, fps=16)
                 print(f"Video saved in {render_video_path}")
+
+                self.update_camera(client, cameras[0])
 
             dump_depth_video_button = self.server.gui.add_button(
                 "Dump Depth Video",
@@ -277,6 +290,8 @@ class ScPanel:
                 depth_value = depth[:, :, :, 0:1] # (N, H, W, 1)
                 depth_map = depth[:, :, :, 1:].astype(np.uint8) # (N, H, W, 3)
                 self.server.scene.set_global_visibility(True)
+
+                self.update_camera(client, cameras[0])
                 
                 for i in range(depth.shape[0]):
                     depth_path = os.path.join(self.depth_vis_dir_detailed, f'{i}.png')
@@ -287,7 +302,187 @@ class ScPanel:
 
     def _setup_vis_folder(self):
         with self.server.gui.add_folder("Visualization"):
-            dummy_button = self.server.gui.add_button("Dummy")
+            data_type_dropdown = self.server.gui.add_dropdown(
+                label="Type",
+                options=self.data_type_list,
+                initial_value=self.data_type_list[0],
+            )
+            @data_type_dropdown.on_update
+            def _(event: viser.GuiEvent) -> None:
+                client = event.client
+                assert client is not None
+                self.current_data_type = data_type_dropdown.value
+                self._set_vis_path()
+
+            vis_traj_button = self.server.gui.add_button(
+                "Visualize Trajectory",
+                color="blue",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="Visualize trajectory as point clouds.",
+            )
+            @vis_traj_button.on_click
+            def _(event: viser.GuiEvent) -> None: 
+                client = event.client
+                assert client is not None
+
+                cam_param_dir_path = self.cam_param_path_vis
+                cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
+                cameras = self.get_cameras_from_json(cam_params_path)
+                c2w = torch.linalg.inv(cameras.world_to_camera.transpose(-1, -2)).detach().cpu().numpy()
+                focal = torch.stack([cameras.fx, cameras.fy], dim=1).detach().cpu().numpy()
+                princpt = torch.stack([cameras.cx, cameras.cy], dim=1).detach().cpu().numpy()
+
+                traj_path_list = [os.path.join(self.char_traj_dir_path_vis, f'{i}.json') for i in range(len(os.listdir(self.char_traj_dir_path_vis)))]
+
+                traj_list = []
+                for traj_path in traj_path_list:
+                    with open(traj_path, 'r') as f:
+                        traj_cam = json.load(f)['traj']
+                    traj_list.append(traj_cam)
+                
+                # traj_list = np.load(traj_path)
+                traj = np.array(traj_list)
+                traj = np.einsum('nij,nj->ni', c2w[:, :3, :3], traj) + c2w[:, :3, 3]
+                N = traj.shape[0]
+                colors = np.stack([
+                    np.linspace(1.0, 0.0, N),  # R
+                    np.zeros(N),              # G
+                    np.linspace(0.0, 1.0, N)  # B
+                ], axis=1)  # shape: (N, 3)
+
+                client.scene.add_point_cloud(
+                    name="trajectory_cloud",
+                    points=traj,       # (N, 3)
+                    colors=colors,     # (N, 3) in [0, 1]
+                    point_size=0.01
+                )
+
+                self.update_camera(client, cameras[0])
+                                        
+            play_SMPL_button = self.server.gui.add_button(
+                "Play SMPL",
+                color="white",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="Play SMPL-X as mesh.",
+            )
+
+            @play_SMPL_button.on_click
+            def _(event: viser.GuiEvent) -> None: 
+                client = event.client
+                assert client is not None
+                
+                cam_param_dir_path = self.cam_param_path_vis
+                cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
+                cameras = self.get_cameras_from_json(cam_params_path)
+                c2w = torch.linalg.inv(cameras.world_to_camera.transpose(-1, -2)).detach().cpu().numpy()
+                focal = torch.stack([cameras.fx, cameras.fy], dim=1).detach().cpu().numpy()
+                princpt = torch.stack([cameras.cx, cameras.cy], dim=1).detach().cpu().numpy()
+
+                mesh_path_list = [os.path.join(self.mesh_dir_path_vis, f'{i}.ply') for i in range(len(os.listdir(self.mesh_dir_path_vis)))]
+                mesh_list = [trimesh.load_mesh(mesh_path).apply_transform(c2w[i]) for i, mesh_path in enumerate(mesh_path_list)]
+
+                self.update_camera(client, cameras[0])
+
+                import threading
+                import time
+                lock = threading.Lock()
+                
+                def render_next_mesh():
+                    while self.running_mesh:
+                        with lock:
+                            i = self.running_mesh_idx
+                            mesh_path = mesh_path_list[i]
+                            mesh = mesh_list[i]
+                            mesh_handle = client.scene.add_mesh_trimesh(
+                                mesh_path,
+                                mesh=mesh
+                            )
+                            cameras = self.get_cameras_from_client(client, self.render_wh)
+                            depth = self.render(cameras, render_mode="exp_depth")[0, :, :, 0:1]
+                            img = self.render(cameras, render_mode="rgb")[0]
+                            client.scene.set_background_image(img, depth=depth)
+
+                            self.running_mesh_idx = (self.running_mesh_idx + 1) % len(mesh_path_list)
+
+                        time.sleep(1 / 30)  # 1초 간격
+                        mesh_handle.remove()
+                
+                def start_render():
+                    if not self.running_mesh:
+                        self.running_mesh = True
+                        timer_thread = threading.Thread(target=render_next_mesh, daemon=True)
+                        timer_thread.start()
+                start_render()
+
+                print("Play SMPL-X")
+            
+            stop_playing_SMPL_button = self.server.gui.add_button(
+                "Stop Playing SMPL",
+                color="red",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="Stop Playing SMPL-X as mesh.",
+            )
+
+            @stop_playing_SMPL_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                self.running_mesh = False
+
+            vis_pc_from_depth_button = self.server.gui.add_button(
+                "Visualize Point Cloud from Depth",
+                color="orange",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="Visualize Point Cloud from depth",
+            )
+            # TODO: add scene depth to pc with rgb
+            @vis_pc_from_depth_button.on_click
+            def _(event: viser.GuiEvent) -> None: 
+                client = event.client
+                assert client is not None
+
+                cam_param_dir_path = self.cam_param_path_vis
+                cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
+                cameras = self.get_cameras_from_json(cam_params_path)
+                c2w = torch.linalg.inv(cameras.world_to_camera.transpose(-1, -2)).detach().cpu().numpy()
+                focal = torch.stack([cameras.fx, cameras.fy], dim=1).detach().cpu().numpy()
+                princpt = torch.stack([cameras.cx, cameras.cy], dim=1).detach().cpu().numpy()
+
+                self.update_camera(client, cameras[0])
+
+                video_frame_path = self.video_frame_path
+                scene_depth_path = self.scene_depth_path
+                optimized_depth_path = self.optimized_depth_path
+
+                N = len(os.listdir(cam_params_path))
+                H, W = cv2.imread(os.path.join(video_frame_path, '0.png')).shape[:2]
+
+                scene_depths = np.array([np.load(os.path.join(scene_depth_path, f'{i}.npy'))[:, :, 0] for i in range(len(os.listdir(scene_depth_path)))])
+                optimized_depths = np.array([cv2.resize(np.load(os.path.join(optimized_depth_path, f'{i}.npy')), (W, H)) for i in range(len(os.listdir(optimized_depth_path)))])
+                video_frames = np.array([cv2.cvtColor(cv2.imread(os.path.join(video_frame_path, f'{i}.png')), cv2.COLOR_BGR2RGB) for i in range(len(os.listdir(video_frame_path)))])
+
+                for i in range(N):
+                    # if i != 0:#  and i != 80:
+                    #     continue
+                    fx, fy = focal[i]
+                    cx, cy = princpt[i]
+                    
+                    c2w_R = c2w[i, :3, :3]
+                    c2w_t = c2w[i, :3, 3]
+
+                    K = np.array([
+                        [fx, 0, cx],
+                        [0, fy, cy],
+                        [0,  0,  1]
+                    ])
+
+                    pc_rgb = video_frames[i].reshape(-1, 3)
+                    pc_world = depth_to_world_pc(optimized_depths[i], K, c2w_R, c2w_t)
+                    
+                    client.scene.add_point_cloud(
+                        name=f"pc_world_{i}",
+                        points=pc_world,
+                        colors=pc_rgb,
+                        point_size=0.001
+                    )
 
     def _build_data_dir(self):
         root_path = self.root_path
@@ -301,12 +496,12 @@ class ScPanel:
 
         self.image_dir = os.path.join(self.static_dir_path, "scene_render_image")
 
-        self.depth_dir_static = os.path.join(self.static_dir_path, "depth_scene")
-        self.depth_vis_dir_static = os.path.join(self.static_dir_path, "depth_scene_vis")
-        self.depth_dir_traj = os.path.join(self.traj_dir_path, "depth_scene")
-        self.depth_vis_dir_traj = os.path.join(self.traj_dir_path, "depth_scene_vis")
-        self.depth_dir_detailed = os.path.join(self.detailed_dir_path, "depth_scene")
-        self.depth_vis_dir_detailed = os.path.join(self.detailed_dir_path, "depth_scene_vis")
+        self.depth_dir_static = os.path.join(self.static_dir_path, "depths_scene")
+        self.depth_vis_dir_static = os.path.join(self.static_dir_path, "depths_scene_vis")
+        self.depth_dir_traj = os.path.join(self.traj_dir_path, "depths_scene")
+        self.depth_vis_dir_traj = os.path.join(self.traj_dir_path, "depths_scene_vis")
+        self.depth_dir_detailed = os.path.join(self.detailed_dir_path, "depths_scene")
+        self.depth_vis_dir_detailed = os.path.join(self.detailed_dir_path, "depths_scene_vis")
 
         self.cam_param_path_static = os.path.join(self.static_dir_path, 'cam_params_scene')
         self.cam_param_path_traj = os.path.join(self.traj_dir_path, 'cam_params_scene')
@@ -325,6 +520,15 @@ class ScPanel:
         os.makedirs(self.cam_param_path_traj, exist_ok=True)
         os.makedirs(self.cam_param_path_detailed, exist_ok=True)
 
+    def _set_vis_path(self):
+        self.cam_param_path_vis = os.path.join(self.root_path, self.current_data_type, 'cam_params_scene')
+        self.mesh_dir_path_vis = os.path.join(self.root_path, self.current_data_type, "smplx_optimized", "meshes_smoothed")
+        self.char_traj_dir_path_vis = os.path.join(self.root_path, self.current_data_type, "smplx_optimized", "traj_smoothed")
+        self.scene_depth_path = os.path.join(self.root_path, self.current_data_type, 'depths_scene')
+        self.optimized_depth_path = os.path.join(self.root_path, self.current_data_type, 'depths_vggt_optimized')
+        # frame1_path = '/data/ckd248/SCVideo/HSI/fitting/data/Custom/data/bicycle3/scene_gs/test/frames_pure'
+        self.video_frame_path = os.path.join(self.root_path, self.current_data_type, 'frames')
+    
     def get_current_camera(self, client: viser.ClientHandle):
         camera = client.camera
         c2w = np.concatenate(
@@ -426,6 +630,22 @@ class ScPanel:
         )
         return camera
     
+    def update_camera(self, client, camera: Camera):
+        # world_to_camera is transposed. To get c2w, apply transpose -> inverse
+        c2w = torch.linalg.inv(camera.world_to_camera.transpose(-1, -2)).detach().cpu().numpy()
+        R = c2w[:3, :3]
+        t = c2w[:3, 3]
+        print(c2w)
+        focal = [camera.fx, camera.fy]
+        princpt = [camera.cx, camera.cy]
+        r = Rotation.from_matrix(R.tolist())
+        quat = r.as_quat() # (x, y, z, w)
+        quat = [quat[3], quat[0], quat[1], quat[2]] # (w, x, y, z)
+        fov_radians = 2 * np.arctan(2 * princpt[1] / (2 * focal[1]))
+        client.camera.fov = fov_radians
+        client.camera.wxyz = quat
+        client.camera.position = t
+
     def render(self, cameras: Cameras, render_mode="rgb"):
         available_outputs = self.renderer.renderer.get_available_outputs()
 
