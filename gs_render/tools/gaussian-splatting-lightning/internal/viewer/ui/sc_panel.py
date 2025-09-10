@@ -226,9 +226,13 @@ class ScPanel:
                 self.server.scene.set_global_visibility(False)
                 image = self.render(cameras, render_mode="rgb")[0]
                 self.server.scene.set_global_visibility(True)
-                image_path = os.path.join(self.image_dir, 'render_image.png')
+                image_path = os.path.join(self.scene_render_dir_static, '0.png')
                 imageio.imwrite(image_path, image)
                 print(f"Save image in {image_path}\nRender resolution is {image.shape}")
+
+                for i in range(self.frame_num):
+                    image_path = os.path.join(self.scene_render_dir_traj, f'{i}.png')
+                    imageio.imwrite(image_path, image)
 
                 c2w, K = self.get_cam_params(client, render_wh)
                 R = c2w[:3, :3]
@@ -241,16 +245,16 @@ class ScPanel:
 
                 image_with_start_point = image.copy()
                 cv2.circle(image_with_start_point, (int(start_uv[0]), int(start_uv[1])), 10, (255, 0, 0), -1)
-                image_path = os.path.join(self.image_dir, 'start_point.png')
+                image_path = os.path.join(self.static_dir_path, 'start_point.png')
                 imageio.imwrite(image_path, image_with_start_point)
 
                 image_with_end_point = image.copy()
                 cv2.circle(image_with_end_point, (int(end_uv[0]), int(end_uv[1])), 10, (0, 0, 255), -1)
-                image_path = os.path.join(self.image_dir, 'end_point.png')
+                image_path = os.path.join(self.static_dir_path, 'end_point.png')
                 imageio.imwrite(image_path, image_with_end_point)
 
                 # Save start/end point
-                points_path = os.path.join(self.image_dir, 'points.json')
+                points_path = os.path.join(self.static_dir_path, 'points.json')
                 points = {
                     "start_point": self.start_point.value,
                     "end_point": self.end_point.value
@@ -307,6 +311,11 @@ class ScPanel:
                 self.server.scene.set_global_visibility(False)
                 image = self.render(cameras, render_mode="rgb") # (N, H, W, 3)
                 self.server.scene.set_global_visibility(True)
+
+                for i in range(self.frame_num):
+                    image_path = os.path.join(self.scene_render_dir_detailed, f"{i}.png")
+                    imageio.imwrite(image_path, image[i])
+
                 render_video_path = os.path.join(self.detailed_dir_path, 'scene_render_video.mp4')
                 imageio.mimsave(render_video_path, image, fps=16)
                 print(f"Video saved in {render_video_path}")
@@ -346,6 +355,21 @@ class ScPanel:
 
     def _setup_vis_folder(self):
         with self.server.gui.add_folder("Visualization"):
+
+            self.show_visualization_checkbox = self.server.gui.add_checkbox(
+                "Show Visualization",
+                initial_value=True,
+            )
+            @self.show_visualization_checkbox.on_update
+            def _(event: viser.GuiEvent):
+                client = event.client
+                assert client is not None
+                scene = client.scene
+                if self.show_visualization_checkbox.value:
+                    scene.set_global_visibility(True)
+                else:
+                    scene.set_global_visibility(False)
+            
             data_type_dropdown = self.server.gui.add_dropdown(
                 label="Type",
                 options=self.data_type_list,
@@ -471,13 +495,18 @@ class ScPanel:
             def _(event: viser.GuiEvent) -> None:
                 self.running_mesh = False
 
+            self.show_optimized_depth_checkbox = self.server.gui.add_checkbox(
+                "Show pc from optimized depth",
+                initial_value=False,
+            )
+
             vis_pc_from_depth_button = self.server.gui.add_button(
                 "Visualize Point Cloud from Depth",
                 color="orange",
                 icon=viser.Icon.PLAYER_PLAY,
                 hint="Visualize Point Cloud from depth",
             )
-            # TODO: add scene depth to pc with rgb
+
             @vis_pc_from_depth_button.on_click
             def _(event: viser.GuiEvent) -> None: 
                 client = event.client
@@ -492,6 +521,7 @@ class ScPanel:
 
                 self.update_camera(client, cameras[0])
 
+                scene_render_path = self.scene_render_path
                 video_frame_path = self.video_frame_path
                 scene_depth_path = self.scene_depth_path
                 optimized_depth_path = self.optimized_depth_path
@@ -501,6 +531,7 @@ class ScPanel:
 
                 scene_depths = np.array([np.load(os.path.join(scene_depth_path, f'{i}.npy'))[:, :, 0] for i in range(len(os.listdir(scene_depth_path)))])
                 optimized_depths = np.array([cv2.resize(np.load(os.path.join(optimized_depth_path, f'{i}.npy')), (W, H)) for i in range(len(os.listdir(optimized_depth_path)))])
+                scene_renders = np.array([cv2.cvtColor(cv2.imread(os.path.join(scene_render_path, f'{i}.png')), cv2.COLOR_BGR2RGB) for i in range(len(os.listdir(scene_render_path)))])
                 video_frames = np.array([cv2.cvtColor(cv2.imread(os.path.join(video_frame_path, f'{i}.png')), cv2.COLOR_BGR2RGB) for i in range(len(os.listdir(video_frame_path)))])
 
                 for i in range(N):
@@ -518,8 +549,12 @@ class ScPanel:
                         [0,  0,  1]
                     ])
 
-                    pc_rgb = video_frames[i].reshape(-1, 3)
-                    pc_world = depth_to_world_pc(optimized_depths[i], K, c2w_R, c2w_t)
+                    if self.show_optimized_depth_checkbox:
+                        pc_rgb = video_frames[i].reshape(-1, 3)
+                        pc_world = depth_to_world_pc(optimized_depths[i], K, c2w_R, c2w_t)
+                    else:
+                        pc_rgb = scene_renders[i].reshape(-1, 3)
+                        pc_world = depth_to_world_pc(scene_depths[i], K, c2w_R, c2w_t)
                     
                     client.scene.add_point_cloud(
                         name=f"pc_world_{i}",
@@ -538,7 +573,9 @@ class ScPanel:
         self.traj_dir_path = os.path.join(root_path, 'traj')
         self.detailed_dir_path = os.path.join(root_path, 'detailed')
 
-        self.image_dir = os.path.join(self.static_dir_path, "scene_render_image")
+        self.scene_render_dir_static = os.path.join(self.static_dir_path, "scene_renders")
+        self.scene_render_dir_traj = os.path.join(self.traj_dir_path, "scene_renders")
+        self.scene_render_dir_detailed = os.path.join(self.detailed_dir_path, "scene_renders")
 
         self.depth_dir_static = os.path.join(self.static_dir_path, "depths_scene")
         self.depth_vis_dir_static = os.path.join(self.static_dir_path, "depths_scene_vis")
@@ -553,13 +590,19 @@ class ScPanel:
 
         os.makedirs(self.static_dir_path, exist_ok=True)
         os.makedirs(self.traj_dir_path, exist_ok=True)
-        os.makedirs(self.image_dir, exist_ok=True)
+        os.makedirs(self.detailed_dir_path, exist_ok=True)
+
+        os.makedirs(self.scene_render_dir_static, exist_ok=True)
+        os.makedirs(self.scene_render_dir_traj, exist_ok=True)
+        os.makedirs(self.scene_render_dir_detailed, exist_ok=True)
+
         os.makedirs(self.depth_dir_static, exist_ok=True)
         os.makedirs(self.depth_vis_dir_static, exist_ok=True)
         os.makedirs(self.depth_dir_traj, exist_ok=True)
         os.makedirs(self.depth_vis_dir_traj, exist_ok=True)
         os.makedirs(self.depth_dir_detailed, exist_ok=True)
         os.makedirs(self.depth_vis_dir_detailed, exist_ok=True)
+        
         os.makedirs(self.cam_param_path_static, exist_ok=True)
         os.makedirs(self.cam_param_path_traj, exist_ok=True)
         os.makedirs(self.cam_param_path_detailed, exist_ok=True)
@@ -570,7 +613,7 @@ class ScPanel:
         self.char_traj_dir_path_vis = os.path.join(self.root_path, self.current_data_type, "smplx_optimized", "traj_smoothed")
         self.scene_depth_path = os.path.join(self.root_path, self.current_data_type, 'depths_scene')
         self.optimized_depth_path = os.path.join(self.root_path, self.current_data_type, 'depths_vggt_optimized')
-        # frame1_path = '/data/ckd248/SCVideo/HSI/fitting/data/Custom/data/bicycle3/scene_gs/test/frames_pure'
+        self.scene_render_path = os.path.join(self.root_path, self.current_data_type, 'scene_renders')
         self.video_frame_path = os.path.join(self.root_path, self.current_data_type, 'frames')
     
     def get_current_camera(self, client: viser.ClientHandle):
