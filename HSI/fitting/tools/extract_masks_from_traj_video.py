@@ -28,7 +28,8 @@ def parse_args():
 
 args = parse_args()
 root_path = args.root_path
-target_root_path = root_path + '_detailed'
+traj_root_path = os.path.join(root_path, 'traj')
+detailed_root_path = os.path.join(root_path, 'detailed')
 
 def mask_to_bbox_mask(mask: np.ndarray) -> np.ndarray:
     """
@@ -93,14 +94,14 @@ def load_ply_mesh(ply_path):
     verts, faces = load_ply(ply_path)
     return verts, faces
 
-cam_params_path = os.path.join(root_path, 'cam_params_scene')
-target_cam_params_path = os.path.join(target_root_path, 'cam_params_scene')
-smplx_ply_path = os.path.join(root_path, 'smplx_optimized', 'meshes_smoothed')
-scene_render_video_path = os.path.join(target_root_path, 'scene_render_video.mp4')
+cam_params_path = os.path.join(traj_root_path, 'cam_params_scene')
+target_cam_params_path = os.path.join(detailed_root_path, 'cam_params_scene')
+smplx_ply_path = os.path.join(traj_root_path, 'smplx_optimized', 'meshes_smoothed')
+scene_render_video_path = os.path.join(detailed_root_path, 'scene_render_video.mp4')
 scene_render_frames = np.array([frame for frame in imageio.get_reader(scene_render_video_path)]) # (N, H, W, 3)
-mask_video_path = os.path.join(target_root_path, 'mask_video.mp4')
-human_masked_video_path = os.path.join(target_root_path, 'human_masked_video.mp4')
-human_render_video_path = os.path.join(target_root_path, 'human_render_video.mp4')
+mask_video_path = os.path.join(detailed_root_path, 'mask_video.mp4')
+human_masked_video_path = os.path.join(detailed_root_path, 'human_masked_video.mp4')
+human_render_video_path = os.path.join(detailed_root_path, 'human_render_video.mp4')
 
 cam_params_list = glob(os.path.join(cam_params_path, '*.json'))
 frame_idx_list = sorted([int(x.split('/')[-1][:-5]) for x in cam_params_list])
