@@ -11,16 +11,12 @@ import math
 from config import cfg
 
 class Model_image(nn.Module):
-    def __init__(self, scene_gs, human_gs):
+    def __init__(self):
         super(Model_image, self).__init__()
         self.smplx_layer = copy.deepcopy(smpl_x.layer['neutral']).cuda()
 
 
-        self.scene_gs = scene_gs
-        self.human_gs = human_gs
         self.gaussian_renderer = GaussianRenderer()
-        self.scene_gs_params = self.scene_gs.get_optimizable_params()
-        self.human_gs_params = self.human_gs.get_optimizable_params() 
 
         self.coord_loss = CoordLoss()
         self.pose_loss = PoseLoss()
@@ -119,59 +115,6 @@ class Model_image(nn.Module):
         pose = torch.cat((smplx_param['root_pose'][:,None,:], smplx_param['body_pose'], smplx_param['jaw_pose'][:,None,:], smplx_param['leye_pose'][:,None,:], smplx_param['reye_pose'][:,None,:], smplx_param['lhand_pose'], smplx_param['rhand_pose']),1) # follow smpl_x.joint['name']
         return pose
     
-    def forward_gs(self, smplx_inputs, data, bg=torch.ones((3)).float().cuda()):
-        batch_size = data['cam_param']['R'].shape[0]
-        
-        scene_human_renders = {}
-        human_renders = {}
-        scene_renders = {}
-
-        # for batch inference
-        # gs_assets, offset = self.human_gs(smplx_inputs, data['cam_param'])
-
-        for i in range(batch_size):
-            smplx_input = {k: v[i] for k,v in smplx_inputs.items()}
-            cam_param = {k: v[i] for k,v in data['cam_param'].items()}
-            image_height, image_width, _ = data['img_orig'][i].shape
-
-            scene_asset = self.scene_gs(cam_param)
-            human_asset, offset = self.human_gs(smplx_input, cam_param)
-
-            # for batch inference
-            # gs_asset = {k: v[i] for k,v in gs_assets.items()}
-
-            scene_human_asset = {}
-            for key in ['mean_3d', 'opacity', 'scale', 'rotation', 'rgb']:
-                scene_human_asset[key] = torch.cat((scene_asset[key].detach(), human_asset[key])) # detach scene
-            
-            scene_human_render_output = self.gaussian_renderer(scene_human_asset, (image_height, image_width), cam_param)
-            human_render_output = self.gaussian_renderer(human_asset, (image_height, image_width), cam_param, bg)
-            scene_render_output = self.gaussian_renderer(scene_asset, (image_height, image_width), cam_param)
-
-            for key in ['img']:
-                if key not in scene_human_renders:
-                    scene_human_renders[key] = [scene_human_render_output[key]]
-                else:
-                    scene_human_renders[key].append(scene_human_render_output[key])
-
-            for key in ['img', 'mask']:
-                if key not in human_renders:
-                    human_renders[key] = [human_render_output[key]]
-                else:
-                    human_renders[key].append(human_render_output[key])
-
-            for key in ['img']:
-                if key not in scene_renders:
-                    scene_renders[key] = [scene_render_output[key]]
-                else:
-                    scene_renders[key].append(scene_render_output[key])
-
-        human_renders = {k: torch.stack(v) for k,v in human_renders.items()}
-        scene_human_renders = {k: torch.stack(v) for k,v in scene_human_renders.items()}
-        scene_renders = {k: torch.stack(v) for k,v in scene_renders.items()}
-
-        return scene_human_renders, human_renders, scene_renders
-    
     def forward(self, smplx_inputs, data, return_output):
         smplx_inputs = self.process_input_smplx_param(smplx_inputs) 
         # get coordinates from optimizable parameters
@@ -222,28 +165,6 @@ class Model_image(nn.Module):
         np.save(f'vggt_depth{debug_id}.npy', sorted_depth)
         print(f"Depth{debug_id} saved...")
         """
-        if cfg.use_gs_loss:
-            scene_human_renders, human_renders, scene_renders = self.forward_gs(smplx_inputs, data, bg)
-
-            loss['rgb_human'] = self.rgb_loss(scene_human_renders['img'], target_image, bbox=data['bbox']) * cfg.rgb_loss_weight
-            loss['ssim_human'] = (1 - self.ssim(scene_human_renders['img'], target_image, bbox=data['bbox'])) * cfg.ssim_loss_weight
-            loss['lpips_human'] = self.lpips(scene_human_renders['img'],  target_image, bbox=data['bbox']) * cfg.lpips_weight
-            loss['rgb_human_rand_bg'] = self.rgb_loss(human_renders['img'], target_image, bbox=data['bbox'], mask=human_mask, bg=bg[None])
-
-            loss['rgb_scene'] = self.rgb_loss(scene_renders['img'], target_image) * (1 - human_mask) * cfg.rgb_loss_weight
-            loss['ssim_scene'] = (1 - self.ssim(scene_renders['img'], target_image, mask=1 - human_mask)) * cfg.ssim_loss_weight
-
-            # Debug
-            """
-            sorted_image = scene_human_renders['img'][sorted_idx].detach().cpu().numpy()
-            np.save(f'gs_out{debug_id}.npy', sorted_image)
-            cv2.imwrite(f'out_image{debug_id}.png', cv2.cvtColor(sorted_image[0].transpose(1, 2, 0) * 255, cv2.COLOR_BGR2RGB).astype(np.uint8))
-            sorted_image = data['img_orig'].permute(0, 3, 1, 2)[sorted_idx].detach().cpu().numpy()
-            np.save(f'gs_target{debug_id}.npy', sorted_image)
-            cv2.imwrite(f'target_image{debug_id}.png', cv2.cvtColor(sorted_image[0].transpose(1, 2, 0), cv2.COLOR_BGR2RGB))
-            print(f'out{debug_id}, target{debug_id} saved...')
-            """
-            
 
         if not cfg.warmup:
                 
@@ -263,18 +184,9 @@ class Model_image(nn.Module):
             out['smplx_mesh_cam'] = smplx_mesh_cam
             out['smplx_trans'] = smplx_trans - smplx_root_cam
             out['human_traj'] = traj
-            if cfg.use_gs_loss:
-                out['scene_human_render'] = scene_human_renders['img']
-                out['human_render'] = human_renders['img']
+            
             return loss, out
 
-def get_model(scene=None, cam_dist=None, human=None):
-    assert scene is not None
-    assert cam_dist is not None
-    assert human is not None
-    human_gs = HumanGaussian()
-    human_gs.init(human)
-    scene_gs = SceneGaussian()
-    scene_gs.init_from_point_cloud(scene[:, :3], scene[:, 3:], cam_dist)
-    model = Model_image(scene_gs, human_gs)
+def get_model():
+    model = Model_image()
     return model

@@ -30,9 +30,6 @@ class Dataset(torch.utils.data.Dataset):
         self.cam_params, self.kpts, self.depth_paths, self.smplx_params, self.smplx_shape_param, self.flame_params, self.flame_shape_param, self.frame_idx_list, self.img_paths, self.depth_vggt_paths = self.load_data()
         self.get_smplx_trans_init() # get initial smplx translation 
         self.get_flame_root_init() # get initial flame root pose and translation
-        self.gs_avatar_attr = self.get_gs_avatar_attr() # get initial human avatar attributes
-        self.cam_dist = self.get_cam_dist() # get camera distribution
-        self.scene_pc = self.load_ply_as_numpy()# get scene point cloud
 
     def load_data(self):
         # load camera parameter
@@ -144,46 +141,6 @@ class Dataset(torch.utils.data.Dataset):
             flame_init = torch.matmul(R, flame_init.permute(1,0)).permute(1,0)
             self.flame_params[frame_idx]['root_pose'] = matrix_to_axis_angle(R)
             self.flame_params[frame_idx]['trans'] = -flame_init.mean(0) + smplx_init.mean(0)
-    
-    def get_gs_avatar_attr(self):
-        info_path = osp.join(self.root_path, 'human_avatar_info')
-        gs_model = np.load(osp.join(info_path, 'gs_model.npy'), allow_pickle=True).item()
-        # transform_mat_neutral_pose = torch.tensor(np.load(osp.join(info_path, 'transform_mat_neutral_pose.npy')))
-        query_points = torch.tensor(np.load(osp.join(info_path, 'query_points.npy'))).cuda()
-
-        gs_model = {k: torch.tensor(v).cuda() for k, v in gs_model.items() if k != 'use_rgb'}
-        gs_model['query_points'] = query_points
-        
-        return gs_model
-    
-    def load_ply_as_numpy(self):
-        pcd = o3d.io.read_point_cloud(osp.join(self.root_path, 'scene_info', 'scene.ply'))
-
-        points = np.asarray(pcd.points)
-
-        assert pcd.has_colors()
-        colors = np.asarray(pcd.colors)
-
-        pc_array = np.concatenate([points, colors], axis=1)  # shape: (N, 6)
-
-        pc_array = torch.tensor(pc_array).float().cuda()
-
-        return pc_array
-    
-    # get camera distribution of a scene
-    def get_cam_dist(self):
-        cam_pos_list = []
-        for frame_idx in self.cam_params.keys():
-            R, t = self.cam_params[frame_idx]['R'], self.cam_params[frame_idx]['t'] # w2c
-            cam_pos = np.dot(R.transpose(1,0), -t.reshape(3)).reshape(3)
-            cam_pos_list.append(cam_pos)
-        cam_pos_list = np.stack(cam_pos_list)
-        
-        cam_pos_mean = np.mean(cam_pos_list, 0)
-        dist_max = np.max(np.sqrt(np.sum((cam_pos_list - cam_pos_mean[None,:])**2,1)))
-        translate = torch.from_numpy(-cam_pos_mean).float()
-        radius = torch.ones((1)).float() * float(dist_max) * 1.1
-        return {'translate': translate, 'radius': radius}
 
     def __len__(self):
         return len(self.frame_idx_list)
@@ -301,6 +258,5 @@ class Dataset(torch.utils.data.Dataset):
                 'cam_param_depth_vggt': {'focal': focal_depth_vggt, 'princpt': princpt_depth_vggt, 'R': cam_rotation, 't': cam_translation}, 
                 'frame_idx': frame_idx, 
                 'img_orig': img_orig,
-                'cam_dist': self.cam_dist
                 }
         return data

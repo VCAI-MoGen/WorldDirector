@@ -50,9 +50,6 @@ def main():
         smplx_params[frame_idx]['expr'] = nn.Parameter(trainer.smplx_params[frame_idx]['expr'].cuda())
         smplx_params[frame_idx]['trans'] = nn.Parameter(trainer.smplx_params[frame_idx]['trans'].cuda())
 
-    scene_gs_params = trainer.model.module.scene_gs_params
-    human_gs_params = trainer.model.module.human_gs_params
-
     for epoch in range(cfg.end_epoch):
         cfg.set_itr_opt_num(epoch)
 
@@ -88,9 +85,6 @@ def main():
                     optimizable_params = []
                     for key in ['body_pose', 'lhand_pose', 'rhand_pose', 'jaw_pose', 'leye_pose', 'reye_pose', 'expr']:
                         optimizable_params.append({'params': [smplx_params[int(frame_idx)][key]], 'name': key, 'lr': cfg.lr})
-
-                    # optimizable_params += human_gs_params
-                    optimizable_params += scene_gs_params
 
                     trainer.get_optimizer(optimizable_params)
 
@@ -163,13 +157,6 @@ def main():
                             'rhand_pose': rotation_6d_to_axis_angle(smplx_params[frame_idx]['rhand_pose'].detach().cpu()).numpy().tolist(), \
                             'expr': smplx_params[frame_idx]['expr'].detach().cpu().numpy().tolist(), \
                             'trans': smplx_trans[i].tolist()}, f)
-                    
-                # gs render
-                if 'scene_human_render' in out:
-                    gs_render = out['scene_human_render'].detach().cpu().numpy()
-                    save_path = osp.join(save_root_path, 'gs_render')
-                    os.makedirs(save_path, exist_ok=True)
-                    cv2.imwrite(osp.join(save_path, str(frame_idx) + '_gs_render.jpg'), cv2.cvtColor((gs_render[i].transpose(1, 2, 0) * 255).astype(np.uint8), cv2.COLOR_BGR2RGB))
 
                 if (itr_data == 0) and (i == 0):
                     # shape parameter
@@ -199,21 +186,6 @@ def main():
         cv2.putText(out, str(frame_idx), (int(0.02*render.shape[1]), int(0.1*render.shape[0])), cv2.FONT_HERSHEY_SIMPLEX, 2.5, [51,51,255], 3, 2) # write frame index
         video_out.write(out)
     video_out.release()
-
-    # gs render video
-    if cfg.use_gs_loss:
-        save_path = osp.join(save_root_path, '..', 'smplx_optimized_gs.mp4')
-        video_shape = cv2.imread(glob(osp.join(save_root_path, 'gs_render', '*.jpg'))[0]).shape[:2] # height, width
-        video_out = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), 30, (video_shape[1]*2, video_shape[0]))
-        frame_idx_list = sorted([int(x.split('/')[-1].split('_')[0]) for x in glob(osp.join(save_root_path, 'gs_render', '*_gs_render.jpg'))])
-        for frame_idx in frame_idx_list:
-            orig_img_path = trainer.trainset_loader.img_paths[frame_idx]
-            orig_img = cv2.imread(orig_img_path)
-            render = cv2.imread(osp.join(save_root_path, 'gs_render', str(frame_idx) + '_gs_render.jpg'))
-            out = np.concatenate((orig_img, render),1)
-            cv2.putText(out, str(frame_idx), (int(0.02*render.shape[1]), int(0.1*render.shape[0])), cv2.FONT_HERSHEY_SIMPLEX, 2.5, [51,51,255], 3, 2) # write frame index
-            video_out.write(out)
-        video_out.release()
 
 
 if __name__ == "__main__":

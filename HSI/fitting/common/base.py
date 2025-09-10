@@ -76,13 +76,8 @@ class Trainer(Base):
         self.smplx_params = self.trainset_loader.smplx_params
         self.smplx_shape_param = self.trainset_loader.smplx_shape_param
 
-        self.gs_avatar_attr = self.trainset_loader.gs_avatar_attr
-        self.cam_dist = self.trainset_loader.cam_dist
-        self.scene_pc = self.trainset_loader.scene_pc
-        
-
     def _make_model(self):
-        model = get_model(scene=self.scene_pc, cam_dist=self.cam_dist, human=self.gs_avatar_attr)
+        model = get_model()
         model = DataParallel(model).cuda()
         model.eval()
         self.model = model

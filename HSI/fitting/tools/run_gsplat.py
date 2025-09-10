@@ -39,17 +39,6 @@ for img_path in img_path_list:
             print('something bad happened when removing unnecessary frames. terminate the script.')
             sys.exit()
 
-"""
-# make camera parameters for gs scene
-if os.path.exists(osp.join(root_path, 'scene_gs')):
-    cam_param_dir = osp.join(root_path, 'cam_params_scene')
-    os.makedirs(cam_param_dir, exist_ok=True)
-    cam_param_path = osp.join(root_path, 'scene_gs', 'cam_param.json')
-    image_len = len(img_path_list)
-    for i in range(image_len):
-        shutil.copy(cam_param_path, osp.join(cam_param_dir, f'{i}.json'))
-"""
-
 # make camera parameters
 os.chdir('./vggt')
 cmd = 'python run_vggt.py --root_path ' + root_path
@@ -82,33 +71,6 @@ if (result != 0):
     print('something bad happened when running SMPLest-X. terminate the script.')
     sys.exit()
 os.chdir('..')
-
-"""
-os.chdir('./LHM')
-MODEL_NAME='LHM-1B'
-MOTION_IMG_DIR=None
-VIS_MOTION='true'
-MOTION_IMG_NEED_MASK='true'
-RENDER_FPS=30
-MOTION_VIDEO_READ_FPS=30
-EXPORT_VIDEO=True
-
-cmd = f"python -m LHM.launch infer.human_lrm model_name={MODEL_NAME} \
-        image_input={os.path.join(root_path, 'frames', '0.png')} \
-        export_video={EXPORT_VIDEO} \
-        only_gs={True} \
-        root_path={root_path} \
-        motion_seqs_dir={os.path.join(root_path, 'smplx_init_lhm')} motion_img_dir={MOTION_IMG_DIR}  \
-        vis_motion={VIS_MOTION} motion_img_need_mask={MOTION_IMG_NEED_MASK} \
-        render_fps={RENDER_FPS} motion_video_read_fps={MOTION_VIDEO_READ_FPS}"
-
-print(cmd)
-result = os.system(cmd)
-if (result != 0):
-    print('something bad happened when running LHM. terminate the script.')
-    sys.exit()
-os.chdir('..')
-"""
 
 # sapiens (get 2D whole-body keypoints)
 os.chdir('./sapiens/lite/scripts/demo/torchscript')
