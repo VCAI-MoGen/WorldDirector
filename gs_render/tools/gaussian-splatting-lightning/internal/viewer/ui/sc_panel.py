@@ -37,12 +37,13 @@ class ScPanel:
 
         self.running_mesh = False
         self.running_mesh_idx = 0
+
+        self.pc_xyz = self.viewer.gaussian_model.get_xyz
+        self.min_x, self.min_y, self.min_z = self.pc_xyz.min(dim=0).values
+        self.max_x, self.max_y, self.max_z = self.pc_xyz.max(dim=0).values
         
         self._build_data_dir()
         self._set_vis_path()
-
-        self.start_point = (0.0, 0.0, 0.0)
-        self.end_point = (0.0, 0.0, 0.0)
 
         self._setup_root_path()
         self._setup_traj_folder()
@@ -63,6 +64,49 @@ class ScPanel:
 
     def _setup_traj_folder(self):
         with self.server.gui.add_folder("Traj"):
+
+            self.start_point = self.server.gui.add_vector3(
+                "Start Point",
+                min=(self.min_x, self.min_y, self.min_z),
+                max=(self.max_x, self.max_y, self.max_z),
+                step=0.01,
+                initial_value=(0.0, 0.0, 0.0),
+            )
+
+            self.end_point = self.server.gui.add_vector3(
+                "End Point",
+                min=(self.min_x, self.min_y, self.min_z),
+                max=(self.max_x, self.max_y, self.max_z),
+                step=0.01,
+                initial_value=(0.0, 0.0, 0.0),
+            )
+
+            @self.start_point.on_update
+            def _(event: viser.GuiEvent):
+                client = event.client
+                assert client is not None
+                scene = client.scene
+                scene.add_point_cloud(
+                    name='start_point',
+                    points=np.array(self.start_point.value)[None],
+                    colors=(1.0, 0.0, 0.0),
+                    point_size=0.01,
+                    point_shape='circle'
+                )
+
+            @self.end_point.on_update
+            def _(event: viser.GuiEvent):
+                client = event.client
+                assert client is not None
+                scene = client.scene
+                scene.add_point_cloud(
+                    name='end_point',
+                    points=np.array(self.end_point.value)[None],
+                    colors=(0.0, 0.0, 1.0),
+                    point_size=0.01,
+                    point_shape='circle'
+                )
+
             pick_start_point_button = self.server.gui.add_button(
                 "Pick Start point",
                 color="red",
@@ -93,8 +137,8 @@ class ScPanel:
                     t = c2w[:3, 3]
 
                     pc = depth_to_world_pc(depth_value[:, :, 0], K, R, t, screen_pos[0]) # (N=1, 3)
-                    self.start_point = pc[0].tolist()
-                    print(f"start point: {self.start_point}")
+                    self.start_point.value = pc[0].tolist()
+                    print(f"start point: {self.start_point.value}")
                     scene.add_point_cloud(
                         name='start_point',
                         points=pc,
@@ -133,8 +177,8 @@ class ScPanel:
                     t = c2w[:3, 3]
 
                     pc = depth_to_world_pc(depth_value[:, :, 0], K, R, t, screen_pos[0]) # (N=1, 3)
-                    self.end_point = pc[0].tolist()
-                    print(f"end point: {self.end_point}")
+                    self.end_point.value = pc[0].tolist()
+                    print(f"end point: {self.end_point.value}")
                     scene.add_point_cloud(
                         name='end_point',
                         points=pc,
@@ -190,7 +234,7 @@ class ScPanel:
                 R = c2w[:3, :3]
                 t = c2w[:3, 3]
 
-                points = np.array([self.start_point, self.end_point])
+                points = np.array([self.start_point.value, self.end_point.value])
                 uv = project_points_to_image(points, K, R, t)
                 start_uv = uv[0].tolist()
                 end_uv = uv[1].tolist()
@@ -208,8 +252,8 @@ class ScPanel:
                 # Save start/end point
                 points_path = os.path.join(self.image_dir, 'points.json')
                 points = {
-                    "start_point": self.start_point,
-                    "end_point": self.end_point
+                    "start_point": self.start_point.value,
+                    "end_point": self.end_point.value
                 }
                 with open(points_path, 'w') as f:
                     json.dump(points, f)
