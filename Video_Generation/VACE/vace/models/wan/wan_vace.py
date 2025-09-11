@@ -446,9 +446,14 @@ class WanVace(WanT2V):
 
             gray_frames = [torch.ones(input_frames[0].shape, device=input_frames[0].device) * -0.0118]
             white_masks = [torch.ones(input_masks[0].shape, device=input_masks[0].device)]
+            black_masks = [torch.zeros(input_masks[0].shape, device=input_masks[0].device)]
             z0_active = self.vace_encode_frames(gray_frames, input_ref_images, masks=white_masks)
             m0_active = self.vace_encode_masks(white_masks, input_ref_images)
             z_active = self.vace_latent(z0_active, m0_active)
+
+            z0_uncond = torch.zeros([len(z0)] + list(z0[0].shape), dtype=z0[0].dtype, device=z0[0].device)
+            m0_uncond = self.vace_encode_masks(white_masks, input_ref_images)
+            z_uncond = self.vace_latent(z0_uncond, m0_uncond)
 
             arg_c = {'context': context, 'seq_len': seq_len}
             arg_null = {'context': context_null, 'seq_len': seq_len}
@@ -456,6 +461,8 @@ class WanVace(WanT2V):
             save_attn = False
             active_last_step = False
             active_step = 39
+            use_cfg = True
+            cfg_guide_scale = 3
 
             print(timesteps)
 
@@ -543,6 +550,16 @@ class WanVace(WanT2V):
 
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
+                
+                if use_cfg:
+                    noise_white_mask = self.model(
+                        latent_model_input, t=timestep, vace_context=z_active, vace_context_scale=context_scale,**arg_c)[0]
+                
+                    noise_uncond = self.model(
+                        latent_model_input, t=timestep, vace_context=z_uncond, vace_context_scale=context_scale,**arg_c)[0]
+
+                    noise_pred = noise_uncond + cfg_guide_scale * (noise_pred - noise_uncond)
+
 
                 temp_x0 = sample_scheduler.step(
                     noise_pred.unsqueeze(0),
