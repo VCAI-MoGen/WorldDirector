@@ -526,7 +526,7 @@ class ScPanel:
                 scene_depth_path = self.scene_depth_path
                 optimized_depth_path = self.optimized_depth_path
 
-                N = len(os.listdir(cam_params_path))
+                N = len(cam_params_path)
                 H, W = cv2.imread(os.path.join(video_frame_path, '0.png')).shape[:2]
 
                 scene_depths = np.array([np.load(os.path.join(scene_depth_path, f'{i}.npy'))[:, :, 0] for i in range(len(os.listdir(scene_depth_path)))])
@@ -722,7 +722,6 @@ class ScPanel:
         c2w = torch.linalg.inv(camera.world_to_camera.transpose(-1, -2)).detach().cpu().numpy()
         R = c2w[:3, :3]
         t = c2w[:3, 3]
-        print(c2w)
         focal = [camera.fx, camera.fy]
         princpt = [camera.cx, camera.cy]
         r = Rotation.from_matrix(R.tolist())
