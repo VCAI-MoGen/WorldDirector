@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, osp.join('..', 'main'))
 sys.path.insert(0, osp.join('..', 'common'))
 from utils.smpl_x import smpl_x
+import imageio
 
 def fix_quaternions(quats):
     """
@@ -163,7 +164,7 @@ os.makedirs(traj_save_path, exist_ok=True)
 with open(osp.join(root_path, smplx_dir, 'shape_param.json')) as f:
     shape_param = torch.FloatTensor(json.load(f))
 img_height, img_width = cv2.imread(osp.join(root_path, 'frames', str(frame_idx_list[0]) + '.png')).shape[:2]
-video_save = cv2.VideoWriter(osp.join(root_path, f'{smplx_dir}_smoothed.mp4'), cv2.VideoWriter_fourcc(*'mp4v'), 30, (img_width*2, img_height))
+video_save = imageio.get_writer(osp.join(root_path, f'{smplx_dir}_smoothed.mp4'), fps=30)
 for frame_idx in tqdm(frame_idx_list):
     smplx_param = smplx_params[frame_idx]
 
@@ -214,7 +215,7 @@ for frame_idx in tqdm(frame_idx_list):
     # save
     cv2.imwrite(osp.join(render_save_path, str(frame_idx) + '_smplx.jpg'), render)
     frame = np.concatenate((img, render),1)
-    frame = cv2.putText(frame, str(frame_idx), (int(img_width*0.1), int(img_height*0.1)), cv2.FONT_HERSHEY_PLAIN, 2.0, (0,0,255), 3)
-    video_save.write(frame.astype(np.uint8))
-
-
+    frame = cv2.cvtColor(frame.astype(np.float32), cv2.COLOR_BGR2RGB)
+    frame = cv2.putText(frame, str(frame_idx), (int(img_width*0.1), int(img_height*0.1)), cv2.FONT_HERSHEY_PLAIN, 2.0, (255,0,0), 3)
+    video_save.append_data(frame.astype(np.uint8))
+video_save.close()

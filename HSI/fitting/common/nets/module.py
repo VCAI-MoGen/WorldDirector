@@ -10,8 +10,6 @@ from smplx.lbs import batch_rigid_transform, blend_shapes
 from config import cfg
 from utils.transforms import get_fov, get_view_matrix, get_proj_matrix, eval_sh, RGB2SH
 
-from diff_gaussian_rasterization_depth import GaussianRasterizationSettings, GaussianRasterizer
-
 def cat_params_to_optimizer(params_new, optimizer):
     optimizable_params = {}
     for group in optimizer.param_groups:

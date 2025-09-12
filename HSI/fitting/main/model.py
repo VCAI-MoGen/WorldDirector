@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from nets.loss import CoordLoss, PoseLoss, DepthLoss, PoseReg, DepthL2Loss, RGBLoss, SSIM, LPIPS, DepthL1Loss
+from nets.loss import CoordLoss, PoseLoss, DepthLoss, PoseReg, DepthL2Loss, RGBLoss, DepthL1Loss
 from nets.layer import rasterize_xy, render_mesh_segmentation
 from nets.module import HumanGaussian, GaussianRenderer, SceneGaussian
 from utils.smpl_x import smpl_x
@@ -25,9 +25,6 @@ class Model_image(nn.Module):
         self.depth_l1_loss = DepthL1Loss()
         self.pose_reg = PoseReg()
         self.rgb_loss = RGBLoss()
-        self.ssim = SSIM()
-        self.lpips = LPIPS()
-
 
     def process_input_smplx_param(self, smplx_param):
         out = {}

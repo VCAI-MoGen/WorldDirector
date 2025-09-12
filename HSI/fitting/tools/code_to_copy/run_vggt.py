@@ -88,11 +88,13 @@ with torch.no_grad():
 
         # Save scene info
         for key in predictions.keys():
+            if key == 'pose_enc_list':
+                continue
             predictions[key] = predictions[key].cpu().numpy().squeeze(0)
             file_name = f'{key}.npy'
             np.save(osp.join(save_path, file_name), predictions[key])
 
-        _, source_h, source_w = predictions['images'][0].shape
+        _, source_h, source_w = predictions['depth'][0].shape
 
         # Save cam_params
         intrinsic = predictions['intrinsic'].astype(np.float32)
@@ -110,11 +112,3 @@ with torch.no_grad():
         depth = predictions['depth'].astype(np.float32)
         for i in range(depth.shape[0]):
             np.save(osp.join(depth_path, str(frame_list[i]) + '.npy'), depth[i][:, :, 0])
-
-        # Save GLB scene
-        glbscene = predictions_to_glb(
-            predictions,
-            conf_thres=1e-4,
-            prediction_mode="Predicted Pointmap"
-        )
-        glbscene.export(file_obj=osp.join(save_path, 'scene.glb'))

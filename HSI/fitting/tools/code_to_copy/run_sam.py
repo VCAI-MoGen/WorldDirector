@@ -7,6 +7,7 @@ from glob import glob
 from tqdm import tqdm
 import json
 import argparse
+import imageio
 
 def get_bbox(kpt_img, kpt_valid, extend_ratio=1.2):
     x_img, y_img = kpt_img[:,0], kpt_img[:,1]
@@ -61,7 +62,7 @@ img_path_list = glob(osp.join(root_path, 'frames', '*.png'))
 frame_idx_list = sorted([int(x.split('/')[-1][:-4]) for x in img_path_list])
 img_height, img_width = cv2.imread(img_path_list[0]).shape[:2]
 if vis_format == 'video':
-    video_save = cv2.VideoWriter(osp.join(root_path, 'masks.mp4'), cv2.VideoWriter_fourcc(*'mp4v'), 30, (img_width*2, img_height))
+    video_save = imageio.get_writer(osp.join(root_path, 'masks.mp4'), fps=30)
 for frame_idx in tqdm(frame_idx_list):
     
     # load image
@@ -91,12 +92,13 @@ for frame_idx in tqdm(frame_idx_list):
         img_masked = img.copy()
         img_masked[~mask] = 0
         frame = np.concatenate((img, img_masked),1)
-        frame = cv2.putText(frame, str(frame_idx), (int(img_width*0.1), int(img_height*0.1)), cv2.FONT_HERSHEY_PLAIN, 2.0, (0,0,255), 3)
-        video_save.write(frame.astype(np.uint8))
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = cv2.putText(frame, str(frame_idx), (int(img_width*0.1), int(img_height*0.1)), cv2.FONT_HERSHEY_PLAIN, 2.0, (255,0,0), 3)
+        video_save.append_data(frame)
     elif vis_format == 'image':
         cv2.imwrite(osp.join(out_path, str(frame_idx) + '.png'), mask * 255)
         img_masked = img.copy()
         img_masked[~mask] = 0
         cv2.imwrite(osp.join(out_path, str(frame_idx) + '_vis.png'), img_masked)
-
-
+if vis_format == 'video':
+    video_save.close()

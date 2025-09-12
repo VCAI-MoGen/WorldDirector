@@ -1,5 +1,4 @@
 import math
-import lpips
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -289,70 +288,4 @@ class RGBLoss(nn.Module):
             img_target = img_target[:,:,ymin:ymax,xmin:xmax]
 
         loss = torch.abs(img_out - img_target)
-        return loss
-
-class SSIM(nn.Module):
-    def __init__(self):
-        super(SSIM, self).__init__()
-
-    def gaussian(self, window_size, sigma):
-        gauss = torch.FloatTensor([math.exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)]).cuda()
-        return gauss / gauss.sum()
-
-    def create_window(self, window_size, feat_dim):
-        window_1d = self.gaussian(window_size, 1.5)[:,None]
-        window_2d = torch.mm(window_1d, window_1d.permute(1,0))[None,None,:,:]
-        window_2d = window_2d.repeat(feat_dim,1,1,1)
-        return window_2d
-
-    def forward(self, img_out, img_target, bbox=None, mask=None, window_size=11):
-        batch_size, feat_dim, img_height, img_width = img_out.shape
-        if mask is not None:
-            img_out = img_out * mask
-            img_target = img_target * mask
-        if bbox is not None:
-            xmin, ymin, width, height = [int(x) for x in bbox[0]]
-            xmin = max(xmin, 0)
-            ymin = max(ymin, 0)
-            xmax = min(xmin+width, img_width)
-            ymax = min(ymin+height, img_height)
-            img_out = img_out[:,:,ymin:ymax,xmin:xmax]
-            img_target = img_target[:,:,ymin:ymax,xmin:xmax]
-
-        window = self.create_window(window_size, feat_dim)
-        mu1 = F.conv2d(img_out, window, padding=window_size//2, groups=feat_dim)
-        mu2 = F.conv2d(img_target, window, padding=window_size//2, groups=feat_dim)
-
-        mu1_sq = mu1 ** 2
-        mu2_sq = mu2 ** 2
-        mu1_mu2 = mu1 * mu2
-
-        sigma1_sq = F.conv2d(img_out*img_out, window, padding=window_size//2, groups=feat_dim) - mu1_sq
-        sigma2_sq = F.conv2d(img_target*img_target, window, padding=window_size//2, groups=feat_dim) - mu2_sq
-        sigma1_sigma2 = F.conv2d(img_out*img_target, window, padding=window_size//2, groups=feat_dim) - mu1_mu2
-
-        C1 = 0.01 ** 2
-        C2 = 0.03 ** 2
-        ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma1_sigma2 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
-        return ssim_map
-
-# image perceptual loss (LPIPS. https://github.com/richzhang/PerceptualSimilarity)
-class LPIPS(nn.Module):
-    def __init__(self):
-        super(LPIPS, self).__init__()
-        self.lpips = lpips.LPIPS(net='vgg').cuda()
-
-    def forward(self, img_out, img_target, bbox=None):
-        batch_size, feat_dim, img_height, img_width = img_out.shape
-        if bbox is not None:
-            xmin, ymin, width, height = [int(x) for x in bbox[0]]
-            xmin = max(xmin, 0)
-            ymin = max(ymin, 0)
-            xmax = min(xmin+width, img_width)
-            ymax = min(ymin+height, img_height)
-            img_out = img_out[:,:,ymin:ymax,xmin:xmax]
-            img_target = img_target[:,:,ymin:ymax,xmin:xmax]
-        img_out = img_out * 2 - 1 # [0,1] -> [-1,1]
-        img_target = img_target * 2 - 1 # [0,1] -> [-1,1]
-        loss = self.lpips(img_out, img_target)
         return loss

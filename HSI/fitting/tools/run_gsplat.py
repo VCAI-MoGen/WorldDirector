@@ -38,7 +38,7 @@ for img_path in img_path_list:
         if (result != 0):
             print('something bad happened when removing unnecessary frames. terminate the script.')
             sys.exit()
-
+"""
 # make camera parameters
 os.chdir('./vggt')
 cmd = 'python run_vggt.py --root_path ' + root_path
@@ -102,27 +102,6 @@ if (result != 0):
     sys.exit()
 os.chdir('../../../../../')
 
-# mask objects in video
-if target_object is not None:
-    os.chdir('./Grounded-SAM-2')
-    cmd = 'python run_grounded_sam2.py --root_path ' + root_path + ' --text_prompt ' + target_object
-    print(cmd)
-    result = os.system(cmd)
-    if (result != 0):
-        print('something bad happened when running grounded-sam-2. terminate the script.')
-        sys.exit()
-    os.chdir('..')
-
-# reconstruct 3D scene from vggt
-os.chdir('./vggt')
-cmd = 'python reconstruct_scene.py --root_path ' + root_path + ' --remove_human'
-print(cmd)
-result = os.system(cmd)
-if (result != 0):
-    print('something bad happened when running scene reconstruction. terminate the script.')
-    sys.exit()
-os.chdir('..')
-
 # fit depth
 os.chdir('../main')
 cmd = 'python fit_depth.py --root_path ' + root_path
@@ -142,7 +121,7 @@ if (result != 0):
     print('something bad happened when fitting. terminate the script.')
     sys.exit()
 os.chdir('../tools')
-
+"""
 # smooth SMPLX
 cmd = 'python smooth_smplx_params.py --root_path ' + root_path
 print(cmd)

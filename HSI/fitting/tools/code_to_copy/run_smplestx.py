@@ -18,6 +18,7 @@ from utils.visualization_utils import render_mesh
 from utils.inference_utils import non_max_suppression
 from glob import glob
 import json
+import imageio
 
 
 def parse_args():
@@ -50,7 +51,7 @@ def main():
     os.makedirs(save_path_lhm, exist_ok=True)
     img_path_list = glob(osp.join(root_path, 'frames', '*.png'))
     img_height, img_width = cv2.imread(img_path_list[0]).shape[:2]
-    video_save = cv2.VideoWriter(osp.join(root_path, 'smplx_init.mp4'), cv2.VideoWriter_fourcc(*'mp4v'), 30, (img_width*2, img_height))
+    video_save = imageio.get_writer(osp.join(root_path, 'smplx_init.mp4'), fps=30)
     frame_idx_list = sorted([int(x.split('/')[-1][:-4]) for x in img_path_list])
     bbox = None
 
@@ -152,9 +153,8 @@ def main():
             
             rendered_img = render_mesh(vis_img, mesh, smpl_x.face, {'focal': focal, 'princpt': princpt})
             frame = np.concatenate((vis_img, rendered_img),1)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = cv2.putText(frame, str(frame_idx), (int(img_width*0.1), int(img_height*0.1)), cv2.FONT_HERSHEY_PLAIN, 2.0, (0,0,255), 3)
-            video_save.write(frame.astype(np.uint8))
+            frame = cv2.putText(frame, str(frame_idx), (int(img_width*0.1), int(img_height*0.1)), cv2.FONT_HERSHEY_PLAIN, 2.0, (255,0,0), 3)
+            video_save.append_data(frame.astype(np.uint8))
 
             # save SMPL-X parameters
             root_pose = out['smplx_root_pose'].detach().cpu().numpy()[0]
@@ -191,7 +191,7 @@ def main():
                         'princpt': [original_img_width / 2, original_img_height / 2], \
                         'img_size_wh': [original_img_width, original_img_height], \
                         'pad_ratio': 0.0}, f)
-
+        video_save.close()
 
 if __name__ == "__main__":
     main()
