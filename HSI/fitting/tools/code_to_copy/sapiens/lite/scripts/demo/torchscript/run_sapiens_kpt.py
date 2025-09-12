@@ -5,16 +5,18 @@ import json
 import numpy as np
 import cv2
 import argparse
+import imageio
 
 def make_video(video_output_path, output_path):
     frame_idx_list = sorted([int(x.split('/')[-1][:-4]) for x in glob(osp.join(output_path, '*.png'))])
     img_height, img_width = cv2.imread(osp.join(output_path, str(frame_idx_list[0]) + '.png')).shape[:2]
-    video = cv2.VideoWriter(video_output_path, cv2.VideoWriter_fourcc(*'mp4v'), 30, (img_width, img_height))
+    video = imageio.get_writer(video_output_path, fps=30)
     for frame_idx in frame_idx_list:
         frame = cv2.imread(osp.join(output_path, str(frame_idx) + '.png'))
-        frame = cv2.putText(frame, str(frame_idx), (int(img_width*0.1), int(img_height*0.1)), cv2.FONT_HERSHEY_PLAIN, 2.0, (0,0,255), 3)
-        video.write(frame.astype(np.uint8))
-    video.release()
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = cv2.putText(frame, str(frame_idx), (int(img_width*0.1), int(img_height*0.1)), cv2.FONT_HERSHEY_PLAIN, 2.0, (255,0,0), 3)
+        video.append_data(frame.astype(np.uint8))
+    video.close()
 
 def parse_args():
     parser = argparse.ArgumentParser()
