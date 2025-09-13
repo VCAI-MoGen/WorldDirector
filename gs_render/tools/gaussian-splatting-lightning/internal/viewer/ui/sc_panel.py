@@ -14,6 +14,7 @@ import json
 import cv2
 import trimesh
 from scipy.spatial.transform import Rotation
+from tqdm import tqdm
 
 class ScPanel:
     def __init__(
@@ -318,6 +319,50 @@ class ScPanel:
 
                 render_video_path = os.path.join(self.detailed_dir_path, 'scene_render_video.mp4')
                 imageio.mimsave(render_video_path, image, fps=16)
+                print(f"Video saved in {render_video_path}")
+
+                self.update_camera(client, cameras[0])
+
+            dump_video_with_traj_SMPL = self.server.gui.add_button(
+                "Dump video with traj SMPL",
+                color="green",
+                icon=viser.Icon.CAMERA,
+                hint="Dump video with traj SMPL",
+            )
+
+            @dump_video_with_traj_SMPL.on_click
+            def _(event: viser.GuiEvent) -> None: 
+                client = event.client
+                assert client is not None
+
+                cam_param_dir_path = self.cam_param_path_detailed
+                cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
+                cameras = self.get_cameras_from_json(cam_params_path)
+                c2w = torch.linalg.inv(cameras.world_to_camera.transpose(-1, -2)).detach().cpu().numpy()
+                focal = torch.stack([cameras.fx, cameras.fy], dim=1).detach().cpu().numpy()
+                princpt = torch.stack([cameras.cx, cameras.cy], dim=1).detach().cpu().numpy()
+                mesh_dir_path = os.path.join(self.traj_dir_path, "smplx_optimized", "meshes_smoothed")
+                mesh_path_list = [os.path.join(mesh_dir_path, f'{i}.ply') for i in range(len(os.listdir(mesh_dir_path)))]
+                mesh_list = [trimesh.load_mesh(mesh_path).apply_transform(c2w[i]) for i, mesh_path in enumerate(mesh_path_list)]
+
+                bg_depth = self.render(cameras, render_mode="exp_depth")[:, :, :, 0:1]
+                bg_img = self.render(cameras, render_mode="rgb")
+
+                images = []
+                assert len(c2w) == len(mesh_list), "Length of cam params should be same with length of SMPL-X mesh"
+                for i in tqdm(range(len(mesh_list))):
+                    self.update_camera(client, cameras[i])
+                    client.scene.set_background_image(bg_img[i], depth=bg_depth[i])
+                    mesh_handle = client.scene.add_mesh_trimesh(
+                        "Traj SMPL-X",
+                        mesh=mesh_list[i]
+                    )
+                    # TODO: handle the dependency of web viewer resolution
+                    image = client.camera.get_render(height=int(princpt[i][1] * 2), width=int(princpt[i][0] * 2))
+                    images.append(image)
+
+                render_video_path = os.path.join(self.detailed_dir_path, 'scene_render_video_with_traj_SMPL.mp4')
+                imageio.mimsave(render_video_path, images, fps=16)
                 print(f"Video saved in {render_video_path}")
 
                 self.update_camera(client, cameras[0])
