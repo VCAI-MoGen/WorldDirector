@@ -43,6 +43,7 @@ img_files = [f for f in files if "img" in f]
 old_path = os.path.join(output_path, img_files[0])
 new_path = zero_path
 os.rename(old_path, new_path)
+print(f"Renaming {old_path} to {new_path}")
 
 # Resize
 image = cv2.imread(new_path)
