@@ -1,0 +1,16 @@
+__pycache__
+human_model_files
+fitting/tools/DECA
+fitting/tools/pytorch3d
+fitting/tools/sapiens
+fitting/tools/segment-anything
+fitting/tools/SMPLest-X
+fitting/tools/vggt
+outputs
+.DS_Store
+fitting/data/Custom/data/*
+fitting/output
+fitting/tools/Grounded-SAM-2
+fitting/tools/LHM
+*.npy
+*.png
