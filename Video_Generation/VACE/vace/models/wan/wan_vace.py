@@ -462,7 +462,19 @@ class WanVace(WanT2V):
             active_last_step = False
             active_step = 39
             use_cfg = True
-            cfg_guide_scale = 3
+            cfg_guide_scale = 2
+            active_cfg_timestep = True
+            cfg_timestep = 47
+            
+            z_batch = z * 2
+            context_batch = context + context_null
+
+            if use_cfg:
+                z_batch += z_uncond
+                context_batch += context
+
+            B = len(z_batch)
+            arg_batch = {'context': context_batch, 'seq_len': seq_len}
 
             print(timesteps)
 
@@ -470,13 +482,26 @@ class WanVace(WanT2V):
                 latent_model_input = latents
                 # print(latent_model_input[0].shape) # (16, 22, 60, 90) = (C, 1 (ref image) + 1 + T / 4, H / 8, W / 8)
                 timestep = [t]
+                timestep_batch = [t] * B
 
                 timestep = torch.stack(timestep)
+                timestep_batch = torch.stack(timestep_batch)
 
                 if active_last_step and idx > active_step:
                     z = z_active
 
                 self.model.to(self.device)
+
+                latent_model_input_batch = latents * B
+
+                output = self.model(
+                    latent_model_input_batch, t=timestep_batch, vace_context=z_batch, vace_context_scale=context_scale, **arg_batch
+                )
+                noise_pred_cond = output[0]
+                noise_pred_uncond = output[1]
+                if use_cfg:
+                    noise_uncond = output[2]
+                """
                 noise_pred_cond = self.model(
                     latent_model_input, t=timestep, vace_context=z, vace_context_scale=context_scale, **arg_c)[0]
                 
@@ -547,19 +572,21 @@ class WanVace(WanT2V):
 
                 noise_pred_uncond = self.model(
                     latent_model_input, t=timestep, vace_context=z, vace_context_scale=context_scale,**arg_null)[0]
-
+                """
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
                 
                 if use_cfg:
-                    noise_white_mask = self.model(
-                        latent_model_input, t=timestep, vace_context=z_active, vace_context_scale=context_scale,**arg_c)[0]
+                    
+                    # noise_white_mask = self.model(
+                    #     latent_model_input, t=timestep, vace_context=z_active, vace_context_scale=context_scale,**arg_c)[0]
                 
-                    noise_uncond = self.model(
-                        latent_model_input, t=timestep, vace_context=z_uncond, vace_context_scale=context_scale,**arg_c)[0]
-
-                    noise_pred = noise_uncond + cfg_guide_scale * (noise_pred - noise_uncond)
-
+                    # noise_uncond = self.model(
+                    #     latent_model_input, t=timestep, vace_context=z_uncond, vace_context_scale=context_scale,**arg_c)[0]
+                    
+                    
+                    if active_cfg_timestep and idx > cfg_timestep:
+                        noise_pred = noise_pred + cfg_guide_scale * (noise_uncond - noise_pred)
 
                 temp_x0 = sample_scheduler.step(
                     noise_pred.unsqueeze(0),
@@ -568,7 +595,7 @@ class WanVace(WanT2V):
                     return_dict=False,
                     generator=seed_g)[0]
                 latents = [temp_x0.squeeze(0)]
-
+                """
                 if save_attn and idx < dynamic_masking_step_threshold:
                     z = z_attn
 
@@ -581,6 +608,7 @@ class WanVace(WanT2V):
                     nrow=1,
                     normalize=True,
                     value_range=(-1, 1))
+                """
 
             x0 = latents
             if offload_model:
