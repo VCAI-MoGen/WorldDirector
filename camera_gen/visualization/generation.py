@@ -14,7 +14,7 @@ import json
 # ------------------------------------------------------------------------------------- #
 
 SEED = 33
-W_GUIDANCE = 2.0
+W_GUIDANCE = 1.4
 SAMPLE_ID = "traj"
 PROMPT = "While the character moves right, the camera performs a boom bottom."
 
@@ -45,42 +45,62 @@ def get_normals(vertices: torch.Tensor, faces: torch.Tensor):
 
 # ------------------------------------------------------------------------------------- #
 
-def gen_K_seq_from_caption(
-    caption: str,
-    fx: float,
-    fy: float,
-    cx: float,
-    cy: float,
-    T: int,
-    smoothing: float = 1.0,
-    zoom_in_factor: float = 3.0,
-    zoom_out_factor: float = 0.3,
-    
-) -> np.ndarray:
-    caption_l = caption.lower()
+def denormalize_traj(
+    traj_norm: torch.Tensor,
+    R0: torch.Tensor = None,
+    t0: torch.Tensor = None,
+) -> torch.Tensor:
+    """
+    Invert the trajectory normalization applied in TrajectoryDataset.get_feature.
 
-    if "zoom" in caption_l and "in" in caption_l:
-        zoom_weights = np.linspace(1.0, zoom_in_factor, T)
-    elif "zoom" in caption_l or "out" in caption_l:
-        zoom_weights = np.linspace(zoom_out_factor, 1.0, T)
-    else:
-        zoom_weights = np.ones(T)
-    zoom_weights_smoothed = gaussian_filter1d(np.array(zoom_weights), sigma = smoothing)
-    fx_seq = fx * zoom_weights_smoothed
-    fy_seq = fy * zoom_weights_smoothed
+    Forward normalization used:
+      R_norm = R0^-1 @ R_world (R_world.transepose(-1,-2)@R0).transpose()
+      t_norm = (t_world - t0) @ R0
 
-    K_seq = np.stack([
-        np.array([
-            [fx_seq[i],0,cx],
-            [0,fy_seq[i],cy],
-            [0,0,1],
-        ], dtype=np.float32)
-        for i in range(T)
-    ])
-    return K_seq
+    This function restores world-space extrinsics:
+      R_world = R0 @ R_norm
+      t_world = t_norm @ R0^T + t0
+
+    Args:
+        traj_norm: Tensor of shape (T, 4, 4) in normalized coordinates.
+        R0: Tensor of shape (3, 3)  first-frame root orientation.
+        t0: Tensor of shape (3,)  first-frame root position.
+
+    Returns:
+        Tensor of shape (T, 4, 4) denormalized to world coordinates.
+    """
+    if not torch.is_tensor(traj_norm) or traj_norm.ndim != 3 or traj_norm.shape[1:] != (4, 4):
+        return traj_norm
+
+    # If no reference provided, nothing to do
+    if R0 is None or t0 is None:
+        return traj_norm
+
+    # Handle potential batch dimension from collate
+    if torch.is_tensor(R0) and R0.ndim == 3 and R0.shape[0] == 1:
+        R0 = R0[0]
+    if torch.is_tensor(t0) and t0.ndim == 2 and t0.shape[0] == 1:
+        t0 = t0[0]
+
+    R0 = R0.to(traj_norm.device).to(traj_norm.dtype)
+    t0 = t0.to(traj_norm.device).to(traj_norm.dtype)
+
+    # Extract rotation and translation from normalized trajectory
+    Rn = traj_norm[:, :3, :3]
+    tn = traj_norm[:, :3, 3]
+
+    # Denormalize
+    Rw = R0 @ Rn
+    tw = tn @ R0.transpose(-1, -2) + t0
+
+    traj_denorm = traj_norm.clone()
+    traj_denorm[:, :3, :3] = Rw
+    traj_denorm[:, :3, 3] = tw
+
+    return traj_denorm
+
+
 # ------------------------------------------------------------------------------------- #
-
-# ---------------------------------------------------------------------------------- #
 
 if __name__ == "__main__":
     diffuser, clip_model, dataset, device = init("config_viz")
@@ -115,16 +135,26 @@ if __name__ == "__main__":
             else:
                 print(f"{k}: {v.shape if isinstance(v, torch.Tensor) else type(v)}")
         print("\n\n")
-        #Run visualization
-        #padding_mask = out["padding_mask"][0].to(bool).cpu()
-        #padded_traj = out["gen_samples"][0].cpu().unsqueeze(0)
         
 
         #####
         char_centers = out["char_raw"]["char_centers"][0].unsqueeze(0)
         padding_mask = out["padding_mask"][0].to(bool).cpu()
         padded_traj = out["gen_samples"][0].cpu()
-        #padded_traj_mod = update_camera_rotations(padded_traj,char_centers)[0]
+
+        # Denormalize camera trajectory using character root reference, if available
+        R0 = None
+        t0 = None
+        try:
+            # Collated dict of tensors: char_root_ref{"R0": (B,3,3), "t0": (B,3)}
+            char_root_ref = out["char_raw"]["char_root_ref"]
+            if isinstance(char_root_ref, dict):
+                R0 = char_root_ref.get("R0", None)
+                t0 = char_root_ref.get("t0", None)
+        except Exception:
+            pass
+
+        # Keep normalized traj for visualization (to match normalized mesh)
         traj = padded_traj[padding_mask]
         padded_vertices = out["char_raw"]["char_vertices"][0]
         vertices = padded_vertices[padding_mask]
@@ -135,7 +165,7 @@ if __name__ == "__main__":
         fx, fy, cx, cy = out["intrinsics"][0].cpu().numpy()
         caption = out["caption_raw"][0]
         T = traj.shape[0]
-        K = gen_K_seq_from_caption(caption,fx,fy,cx,cy,T)
+        K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
         
 
 
@@ -161,14 +191,16 @@ if __name__ == "__main__":
         frame_list = [f"{i:06d}" for i in range(T)]
         ### save camera parameters(.json format)
         intrinsic = K.astype(np.float32)
-        extrinsic = traj.detach().cpu().numpy().astype(np.float32)
+        # Denormalize only for JSON output
+        traj_world = denormalize_traj(traj, R0, t0)
+        extrinsic = traj_world.detach().cpu().numpy().astype(np.float32)
         for i in range(T):
             R = extrinsic[i][:3, :3].tolist()
             t = extrinsic[i][:3, 3].tolist()
-            fx_src = float(intrinsic[i][0, 0])
-            fy_src = float(intrinsic[i][1, 1])
-            cx_src = float(intrinsic[i][0, 2])
-            cy_src = float(intrinsic[i][1, 2])
+            fx_src = float(intrinsic[0, 0])
+            fy_src = float(intrinsic[1, 1])
+            cx_src = float(intrinsic[0, 2])
+            cy_src = float(intrinsic[1, 2])
             data = {
                 "R": R,
                 "t": t,

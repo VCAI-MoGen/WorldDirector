@@ -18,6 +18,14 @@ from utils.rotation_utils import compute_rotation_matrix_from_ortho6d
 num_cams = None
 
 # ------------------------------------------------------------------------------------- #
+## debug non-finite numbers
+def _finite(x: torch.Tensor, tag: str):
+    if torch.is_tensor(x):
+        m = ~torch.isfinite(x)
+        if m.any():
+            idx = m.nonzero(as_tuple=False)[0].tolist()
+            val = x[tuple(idx)].detach().cpu()
+            print(f"[NaN/Inf] {tag} @ {tuple(idx)} = {val} | shape={tuple(x.shape)}")
 
 
 class TrajectoryDataset(Dataset):
@@ -78,7 +86,7 @@ class TrajectoryDataset(Dataset):
 
     # --------------------------------------------------------------------------------- #
 
-
+    ### 여기서 char_dataset->multimodal_dataset->trajectory_dataset으로 R0/t0를 받아서 카메라의 rot/trans를 정규화하는 파트입니다.
     def init_external_reference(self, R0: torch.Tensor = None, t0: torch.Tensor = None):
         self.external_ref_rot = R0
         self.external_ref_transl = t0 
@@ -93,6 +101,10 @@ class TrajectoryDataset(Dataset):
         raw_rot = matrix_trajectory[:,:3,:3]
         raw_trans = matrix_trajectory[:,:3,3]
 
+        _finite(raw_rot, "R_in")
+        _finite(raw_trans, "t_in")
+
+
         ######## camera rotatation and translation relative to the first frame of smplx root pose
         #ref_rot/ref_trans retrieved from raw_feat of character dataset as R0 & t0 respectively
         if self.align_first_frame:
@@ -104,25 +116,45 @@ class TrajectoryDataset(Dataset):
                 t0 = self.external_ref_transl.to(raw_trans.device)
             else: 
                 t0 = raw_trans[0]
+           
                 
             # R0(3,3) p0(3,) raw_rot (300,3,3) raw_trans(300,3,)  
-            raw_rot = (raw_rot.transpose(-1,-2) @ R0).transpose(-1,-2)
-            raw_trans = (raw_trans - t0) @ R0
+            # R_norm = R0^-1 @ raw_rot
+            raw_rot_norm = R0.T @ raw_rot
+            # t_norm = -R_norm @ R0^-1 @ (-R^-1 @ raw_trans - t0)
+            R0_T = R0.transpose(-1,-2)
+            R_T = raw_rot.transpose(-1,-2)
+            C = -(R_T @ raw_trans[...,None]).squeeze(-1)
+            C_norm = (R0_T @ (C - t0).transpose(-1, -2)).transpose(-1, -2)
+            raw_trans_norm = -(raw_rot_norm @ C_norm[...,None]).squeeze(-1)
+
+            raw_rot = raw_rot_norm
+            raw_trans = raw_trans_norm
+            _finite(raw_rot, "R_after_norm")
+            _finite(raw_trans, "t_after_norm")
+
         
-        if self.velocity:
-            velocity = raw_trans[1:] - raw_trans[:-1]
-            raw_trans = torch.cat([raw_trans[0][None], velocity])
-        if self.standardize:
-            raw_trans[0] -= self.shift_mean
-            raw_trans[0] /= self.shift_std
-            raw_trans[1:] -= self.norm_mean
-            raw_trans[1:] /= self.norm_std
+        # if self.velocity:
+        #     velocity = raw_trans[1:] - raw_trans[:-1]
+        #     raw_trans = torch.cat([raw_trans[0][None], velocity])
+        #     _finite(raw_trans, "t_after_velocity")
+
+        # if self.standardize:
+        #     raw_trans[0] -= self.shift_mean
+        #     raw_trans[0] /= self.shift_std
+        #     raw_trans[1:] -= self.norm_mean
+        #     raw_trans[1:] /= self.norm_std
+        #     _finite(raw_trans, "t_after_standardization")
+
 
         rot6d = raw_rot[:, :, :2].permute(0, 2, 1).reshape(-1, 6)
+        _finite(rot6d,"rot6d")
+
 
         # Stack rotation 6D and translation
         rot6d_trajectory = torch.hstack([rot6d, raw_trans]).permute(1, 0)
-
+        _finite(rot6d_trajectory,"rot6d_trajectory")
+        
         return rot6d_trajectory
 
     def get_matrix(
@@ -136,13 +168,13 @@ class TrajectoryDataset(Dataset):
 
         raw_trans = rot6d_trajectory[6:].permute(1, 0)
         
-        if self.standardize:
-            raw_trans[0] *= self.shift_std.to(device)
-            raw_trans[0] += self.shift_mean.to(device)
-            raw_trans[1:] *= self.norm_std.to(device)
-            raw_trans[1:] += self.norm_mean.to(device)
-        if self.velocity:
-            raw_trans = torch.cumsum(raw_trans, dim=0)
+        # if self.standardize:
+        #     raw_trans[0] *= self.shift_std.to(device)
+        #     raw_trans[0] += self.shift_mean.to(device)
+        #     raw_trans[1:] *= self.norm_std.to(device)
+        #     raw_trans[1:] += self.norm_mean.to(device)
+        # if self.velocity:
+        #     raw_trans = torch.cumsum(raw_trans, dim=0)
         matrix_trajectory[:, :3, 3] = raw_trans
 
         rot6d = rot6d_trajectory[:6].permute(1, 0)

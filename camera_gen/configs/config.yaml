@@ -17,9 +17,9 @@ log_dir: ${results_dir}/${xp_name}/${timestamp}
 checkpoint_path: null
 seed: 42
 save_and_sample_every: 10
-num_train_epochs: 400
+num_train_epochs: 440
 log_wandb: true
-batch_size: 64
+batch_size: 128
 
 trainer:
   _partial_: true
@@ -28,10 +28,15 @@ trainer:
   strategy: auto
   devices: ${compnode.num_gpus}
   max_epochs: ${num_train_epochs}
+  
   precision: 16-mixed
   check_val_every_n_epoch: 30
   num_sanity_val_steps: 0
 
+### reference to filter training sequences that contain nan/inf values on .pkl parameters
+splits:
+  good: ./assets/good.txt
+  bad: ./assets/bad.txt
 
 hydra:
   run:

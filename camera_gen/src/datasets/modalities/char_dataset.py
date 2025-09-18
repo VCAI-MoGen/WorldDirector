@@ -1,37 +1,50 @@
 from pathlib import Path
-import os
+import pickle
+from typing import List, Tuple
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 import torch.nn.functional as F
-import pickle
-from smplx import SMPLX
-from pytorch3d.transforms import matrix_to_axis_angle
-from pytorch3d.io import save_obj, save_ply
 
-# --- Meshlab debugging supplementary function ---
-def export_mesh_ply(verts, faces, joints=None, out_dir="./debug_vis", prefix="seq"):
-    output_dir = os.path.join(out_dir, prefix)
-    os.makedirs(output_dir, exist_ok=True)
-    T = verts.shape[0]
-    for i in range(T):
-        save_path = os.path.join(output_dir, f"{prefix}_frame{i:03d}.obj")
-        save_obj(save_path, verts[i].cpu(), faces.cpu())
-        if joints is not None:
-            joint_path = os.path.join(output_dir, f"{prefix}_joint{i:03d}.ply")
-            save_ply(joint_path, joints[i].cpu())
+try:
+    from smplx import SMPLX
+    from pytorch3d.pytorch3d.transforms import matrix_to_axis_angle
+    from pytorch3d.pytorch3d.transforms import matrix_to_rotation_6d
+    _SMPLX_AVAILABLE = True
+except Exception:
+    _SMPLX_AVAILABLE = False
 
 
-def project_to_so3(R): # R: (...,3,3)
-    U, S, Vh = torch.linalg.svd(R)
-    Rproj = U @ Vh
-    # det 보정(음수면 마지막 축 반전)
-    det = torch.det(Rproj)
-    neg = det < 0
-    if neg.any():
-        U[neg, :, -1] *= -1
-        Rproj = U @ Vh
-    return Rproj
+# ------------------------------------------------------------------------------------- #
+
+
+def _to_numpy(x):
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    return np.asarray(x)
+
+
+def _project_to_so3(mat: torch.Tensor) -> torch.Tensor:
+    shape = mat.shape
+    mat = mat.reshape(-1, 3, 3)
+    U, _, Vh = torch.linalg.svd(mat)
+    proj = U @ Vh
+    det = torch.det(proj)
+    neg_mask = det < 0
+    if neg_mask.any():
+        Vh[neg_mask, -1] *= -1
+        proj = U @ Vh
+    return proj.reshape(shape)
+
+def _summarize(name: str, arr: np.ndarray) -> str:
+    try:
+        min_val = float(np.nanmin(arr))
+        max_val = float(np.nanmax(arr))
+    except Exception:
+        min_val = max_val = "n/a"
+    return f"{name}: shape={arr.shape} min={min_val} max={max_val}"
+
 
 class CharacterDataset(Dataset):
     def __init__(
@@ -45,7 +58,6 @@ class CharacterDataset(Dataset):
         num_vertices: int,
         num_faces: int,
         load_vertices: bool,
-        device: torch.device | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -53,174 +65,228 @@ class CharacterDataset(Dataset):
         self.name = name
         self.dataset_dir = Path(dataset_dir)
         self.data_dir = self.dataset_dir / self.name
-        self.vert_dir = self.dataset_dir / "smplh"
+        self.smpl_dir = self.dataset_dir / "smplh"
+        self.filenames: List[str] = []
 
-        self.filenames = None  
-        self.standardize = standardize
-        if self.standardize:
-            mean_std = kwargs["standardization"]
-            self.norm_mean = torch.Tensor(mean_std["norm_mean_h"])[:, None]
-            self.norm_std = torch.Tensor(mean_std["norm_std_h"])[:, None]
-            self.velocity = mean_std["velocity"]
-
-        # device initialization
-        self.device = torch.device("cpu")
-
-        # SMPL-X model initialization
-        self.smpl_model = SMPLX(
-            model_path="./et-data/human_model",
-            model_type="smplx",
-            gender="neutral"
-        )
-        self.smpl_model.use_pca = False  # hands 45D 
-
-        # faces는 
-        self.faces_tensor = self.smpl_model.faces_tensor  # (F, 3)
+        self.standardize = False
+        self.velocity = False
 
         self.num_cams = num_cams
         self.num_feats = num_feats
         self.num_vertices = num_vertices
         self.num_faces = num_faces
         self.sequential = sequential
+
         self.load_vertices = load_vertices
 
-    def __len__(self):
+        self._smplx_model = None
+        self._smplx_ready = False
+        self.model_root = self.dataset_dir / "human_model"
+
+    # ------------------------------------------------------------------------------ #
+
+    def _ensure_smplx(self):
+        if not _SMPLX_AVAILABLE:
+            raise RuntimeError("SMPLX package is not available in this environment")
+        if self._smplx_ready:
+            if self._smplx_model is None:
+                raise RuntimeError("SMPLX model failed to load previously")
+            return
+        self._smplx_ready = True
+        if not self.model_root.exists():
+            raise RuntimeError(f"SMPLX model directory not found: {self.model_root}")
+        try:
+            self._smplx_model = SMPLX(
+                model_path=str(self.model_root),
+                model_type="smplx",
+                gender="neutral",
+            )
+            self._smplx_model.use_pca = False
+        except Exception as exc:
+            self._smplx_model = None
+            raise RuntimeError(f"Failed to load SMPLX model: {exc}") from exc
+
+    # ------------------------------------------------------------------------------ #
+
+    def __len__(self) -> int:
         return len(self.filenames)
 
-    def __getitem__(self, index):
+    # ------------------------------------------------------------------------------ #
+
+    def _load_smpl_params(self, filename: str) -> Tuple[dict, Path]:
+        pkl_filename = filename + ".pkl"
+        smpl_path = self.smpl_dir / pkl_filename
+        custom_path = (self.dataset_dir.parent / "custom") / pkl_filename
+
+        chosen_path: Path | None = None
+        if smpl_path.exists():
+            chosen_path = smpl_path
+        elif custom_path.exists():
+            chosen_path = custom_path
+
+        if chosen_path is None:
+            raise FileNotFoundError(f"SMPL parameter file not found for {filename}")
+
+        with open(chosen_path, "rb") as f:
+            params = pickle.load(f, encoding="latin1")
+        return params, chosen_path
+
+    # ------------------------------------------------------------------------------ #
+
+    def __getitem__(self, index: int):
         filename = self.filenames[index]
-        char_filename = filename + ".npy"
-        char_path = self.data_dir / char_filename
 
-        device = self.device
+        # ------------------------------------------------------------------ #
+        # Load character trajectory (centers)
+        char_path = self.data_dir / f"{filename}.npy"
+        if not char_path.exists():
+            raise FileNotFoundError(f"Character feature not found: {char_path}")
         raw_char_feature = torch.from_numpy(np.load(char_path)).to(torch.float32)
-        B = raw_char_feature.shape[0]
+        padding_size = self.num_cams - raw_char_feature.shape[0]
+        padded_raw_char_feature = F.pad(raw_char_feature, (0, 0, 0, padding_size)).permute(1, 0)
 
-        # initial buffer
-        verts_norm     = torch.zeros(B, self.num_vertices, 3, device=device)
-        char_traj_norm = torch.zeros(B, 3, device=device)
-        faces = self.faces_tensor
-        R0 = torch.eye(3, device=device)
-        t0 = torch.zeros(3, device=device)
+        # ------------------------------------------------------------------ #
+        # Load SMPL parameters and compute root reference
+        smpl_params, smpl_path = self._load_smpl_params(filename)
+        reasons: List[str] = []
 
-        pkl_path = (self.vert_dir / filename).with_suffix(".pkl")
-        if  os.path.exists(pkl_path):
-            self.smpl_model = self.smpl_model.to(device)
+        go = smpl_params.get("global_orient")
+        transl = smpl_params.get("transl")
+        body_pose = smpl_params.get("body_pose")
+        lhand_pose = smpl_params.get("left_hand_pose")
+        rhand_pose = smpl_params.get("right_hand_pose")
+        betas = smpl_params.get("betas")
 
-            with open(pkl_path, "rb") as f:
-                smpl_params = pickle.load(f, encoding="latin1")
+        if go is None:
+            reasons.append("missing global_orient")
+        if transl is None:
+            reasons.append("missing transl")
 
-           
-            body_mat  = torch.tensor(smpl_params["body_pose"],       dtype=torch.float32)    # (Tp,21,3,3)
-            lhand_mat = torch.tensor(smpl_params["left_hand_pose"], dtype=torch.float32)
-            rhand_mat = torch.tensor(smpl_params["right_hand_pose"], dtype=torch.float32)
-            go_mat    = torch.tensor(smpl_params["global_orient"],   dtype=torch.float32)    # (Tp,1,3,3) or (Tp,3,3)
-            betas     = torch.tensor(smpl_params["betas"], dtype=torch.float32)   # (Tp,10) or (1,10)
-            transl    = torch.tensor(smpl_params["transl"],  dtype=torch.float32)   # (Tp,3)  or (1,3)
+        if go is None or transl is None:
+            detail = []
+            if go is not None:
+                detail.append(_summarize("global_orient", _to_numpy(go)))
+            if transl is not None:
+                detail.append(_summarize("transl", _to_numpy(transl)))
+            raise RuntimeError(
+                f"[CharacterDataset] {filename}: insufficient SMPL params ({', '.join(reasons)}) | {'; '.join(detail)}"
+            )
 
-            # mat → axis-angle
-            # def mat_to_aa(mat, J):
-            #     Tp = mat.shape[0]
-            #     return matrix_to_axis_angle(mat.reshape(Tp * J, 3, 3)).reshape(Tp, J * 3)
-            def mat_to_aa_safe(mat, J):
-                mat = project_to_so3(mat.reshape(-1, 3, 3)).reshape(*mat.shape)
-                return matrix_to_axis_angle(mat.reshape(-1, 3, 3)).reshape(mat.shape[0], J * 3)
+        if len(transl) == 0:
+            raise RuntimeError(f"[CharacterDataset] {filename}: transl empty")
 
-            Tp = body_mat.shape[0]
-            if go_mat.dim() == 4:  # (Tp,1,3,3) → (Tp,3,3)
-                go_mat = go_mat.squeeze(1)
-            global_orient_aa = mat_to_aa_safe(go_mat,1)  # (Tp,3)
-            body_pose_aa     = mat_to_aa_safe(body_mat, 21)       # (Tp,63)
-            lhand_pose_aa    = mat_to_aa_safe(lhand_mat, 15)      # (Tp,45)
-            rhand_pose_aa    = mat_to_aa_safe(rhand_mat, 15)      # (Tp,45)
+        go_np = _to_numpy(go)
+        transl_np = _to_numpy(transl)
+        if go_np is None or not np.isfinite(go_np).all():
+            raise RuntimeError(
+                f"[CharacterDataset] {filename}: global_orient invalid ({_summarize('global_orient', go_np)})"
+            )
+        if transl_np is None or not np.isfinite(transl_np).all():
+            raise RuntimeError(
+                f"[CharacterDataset] {filename}: transl invalid ({_summarize('transl', transl_np)})"
+            )
 
-            #align timestep
-            def align_time(x, T):
-                if x.ndim == 1:
-                    x = x.unsqueeze(0)
-                Tx = x.shape[0]
-                if Tx == T:
-                    return x
-                if Tx == 1:
-                    return x.expand(T, *x.shape[1:])
-                return x[:min(Tx, T)]
+        if go_np.ndim == 4 and go_np.shape[1] == 1:
+            go_np = go_np[:, 0]
+        if go_np.shape[-2:] != (3, 3):
+            raise RuntimeError(
+                f"[CharacterDataset] {filename}: global_orient unexpected shape {go_np.shape}"
+            )
+        root_rotations = _project_to_so3(torch.from_numpy(go_np).to(torch.float32))
+        R0 = root_rotations[0]
+        t0 = torch.as_tensor(transl_np[0], dtype=torch.float32)
 
-            body_pose_aa     = align_time(body_pose_aa,     B)
-            lhand_pose_aa    = align_time(lhand_pose_aa,    B)
-            rhand_pose_aa    = align_time(rhand_pose_aa,    B)
-            global_orient_aa = align_time(global_orient_aa, B)
-            betas            = align_time(betas,            B)
-            transl           = align_time(transl,           B)
+        # Run SMPLX forward to refine pelvis position when possible
+        self._ensure_smplx()
+        if body_pose is None or lhand_pose is None or rhand_pose is None or betas is None:
+            raise RuntimeError(
+                f"[CharacterDataset] {filename}: missing SMPL pose parameters"
+            )
+        try:
+            bp = _project_to_so3(torch.tensor(_to_numpy(body_pose)[0], dtype=torch.float32).view(21, 3, 3))
+            lh = _project_to_so3(torch.tensor(_to_numpy(lhand_pose)[0], dtype=torch.float32).view(15, 3, 3))
+            rh = _project_to_so3(torch.tensor(_to_numpy(rhand_pose)[0], dtype=torch.float32).view(15, 3, 3))
+            go0 = root_rotations[0].unsqueeze(0)
+            betas0 = torch.tensor(_to_numpy(betas)[0], dtype=torch.float32).view(1, -1)
+            transl0 = t0.view(1, 3)
 
-            # SMPL-X forward
+            body_aa = matrix_to_axis_angle(bp).view(1, 21 * 3)
+            lhand_aa = matrix_to_axis_angle(lh).view(1, 15 * 3)
+            rhand_aa = matrix_to_axis_angle(rh).view(1, 15 * 3)
+            go_aa = matrix_to_axis_angle(go0)
+
             with torch.no_grad():
-                out = self.smpl_model(
-                    betas=betas,                         # (B,10)
-                    body_pose=body_pose_aa,              # (B,63)
-                    global_orient=global_orient_aa,      # (B,3)
-                    transl=transl,                       # (B,3)
-                    left_hand_pose=lhand_pose_aa,        # (B,45)
-                    right_hand_pose=rhand_pose_aa,       # (B,45)
-                    jaw_pose=torch.zeros(B, 3),
-                    leye_pose=torch.zeros(B, 3),
-                    reye_pose=torch.zeros(B, 3),
-                    expression=torch.zeros(B, 10),
+                out = self._smplx_model(
+                    betas=betas0,
+                    body_pose=body_aa,
+                    global_orient=go_aa,
+                    transl=transl0,
+                    left_hand_pose=lhand_aa,
+                    right_hand_pose=rhand_aa,
+                    jaw_pose=torch.zeros(1, 3),
+                    leye_pose=torch.zeros(1, 3),
+                    reye_pose=torch.zeros(1, 3),
+                    expression=torch.zeros(1, 10),
+                    return_verts=False,
                 )
-            if self.load_vertices:
-                verts_smpl = out.vertices  # (B,V,3)
-            joints_smpl = out.joints    # (B,J,3)
+            pelvis = out.joints[0][0].to(torch.float32)
+            if torch.isfinite(pelvis).all():
+                t0 = pelvis
+            else:
+                raise RuntimeError(
+                    f"[CharacterDataset] {filename}: pelvis contains non-finite values"
+                )
+        except Exception as exc:
+            raise RuntimeError(f"[CharacterDataset] {filename}: SMPLX forward failed ({exc})")
 
-            #1st frame normalization
-            p0 = joints_smpl[0, 0].detach()
-            R0 = go_mat[0].detach() 
-            if self.load_vertices:
-                verts_norm  = (verts_smpl - p0) @ R0
-            char_traj_norm = (raw_char_feature - p0) @ R0
-            #6d rotation from normalized root pose
-            #R_norm = go_mat.transpose(-1,-2)@R0.transpose(-1,-2)
-            #rot6d = R_norm[:,:,2].permute(0,2,1).contiguous().reshape(B,6)
-            t0 = p0
+        if not torch.isfinite(R0).all() or not torch.isfinite(t0).all():
+            raise RuntimeError(
+                f"[CharacterDataset] {filename}: R0/t0 non-finite"
+            )
 
+        char_root_ref = {"R0": R0, "t0": t0}
 
+        # ------------------------------------------------------------------ #
+        # Normalize trajectory by root
+        char_feature = (raw_char_feature - t0) @ R0
+
+        seq_len = char_feature.shape[0]
+        if root_rotations.shape[0] < seq_len:
+            pad_rot = root_rotations[-1:].expand(seq_len - root_rotations.shape[0], -1, -1)
+            root_rotations = torch.cat([root_rotations, pad_rot], dim=0)
         else:
-            # if pkl files does not exist
-            p0 = raw_char_feature[0].clone()
-            with torch.no_grad():
-                out = self.smpl_model(transl=raw_char_feature) 
-            if self.load_vertices:
-                verts_smpl = out.vertices# (B,V,3)
-            verts_norm = verts_smpl - p0
-            char_traj_norm = raw_char_feature - p0
-            t0 = p0
+            root_rotations = root_rotations[:seq_len]
 
-        #char_feature velocity & standardization + feature padding
-        char_feature = char_traj_norm.clone()
-        if self.velocity:
-            velocity = char_feature[1:] - char_feature[:-1]
-            char_feature = torch.cat([char_feature[0:1], velocity], dim=0)
+        R0_T = R0.transpose(0, 1).unsqueeze(0)
+        root_rot_norm = torch.matmul(R0_T, root_rotations)
+        root_rot6d = matrix_to_rotation_6d(root_rot_norm)
+        char_feature = torch.cat([char_feature, root_rot6d], dim=1)
+        
+        root_rot6d_raw = root_rot6d.clone()
 
-        if self.standardize:
-            pass
-        #adding 6D rotation to charactr trajectory
-        #char_feature = torch.cat([char_feature,rot6d],dim=-1)
-        padding_size = max(0, self.num_cams - char_feature.shape[0])
-        padded_char_feature = F.pad(char_feature, (0, 0, 0, padding_size))
-        padded_verts = F.pad(verts_norm, (0, 0, 0, 0, 0, padding_size))
+        
+        if not torch.isfinite(char_feature).all():
+            raise RuntimeError(f'[CharacterDataset] {filename}: char_feature contains non-finite values')
+
+        padded_char_feature = F.pad(
+            char_feature,
+            (0, 0, 0, self.num_cams - char_feature.shape[0]),
+        )
+        padded_root_rot6d = F.pad(
+            root_rot6d_raw,
+            (0, 0, 0, self.num_cams - seq_len),
+        )
 
         if self.sequential:
-            padded_char_feature = padded_char_feature.permute(1, 0)  # (3,T)
+            padded_char_feature = padded_char_feature.permute(1, 0)
         else:
             padded_char_feature = padded_char_feature.reshape(-1)
 
-        # ---  Return ---
         raw_feats = {
-            "char_raw_feat": padded_char_feature,
-            "char_centers": padded_char_feature,
+            "char_raw_feat": padded_raw_char_feature,
+            "char_centers": padded_raw_char_feature,
+            "char_root_rot6d": padded_root_rot6d,
+            "char_root_ref": char_root_ref,
         }
-        if self.load_vertices:
-            padded_faces = faces.unsqueeze(0).expand(self.num_cams, -1, -1)
-            raw_feats["char_vertices"] = padded_verts
-            raw_feats["char_faces"] = padded_faces
-        raw_feats["char_root_ref"] = {"R0": R0, "t0": t0}
 
-        return char_filename, padded_char_feature, raw_feats
+        return filename + ".npy", padded_char_feature, raw_feats

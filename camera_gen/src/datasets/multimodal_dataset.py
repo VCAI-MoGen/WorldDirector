@@ -77,7 +77,7 @@ class MultimodalDataset(Dataset):
             if isinstance(char_raw, dict) and "char_root_ref" in char_raw:
                 R0 = char_raw["char_root_ref"]["R0"]
                 t0 = char_raw["char_root_ref"]["t0"]
-                #del char_raw["char_root_ref"]
+
             out.update({
                 f"{char_key}_filename" : char_filename,
                 f"{char_key}_feat" : char_feat,
@@ -85,6 +85,7 @@ class MultimodalDataset(Dataset):
             })
         else: 
             out = {}
+        ### 여기서 char_dataset의 R0/t0를 init_external_reference 함수를 통해 초기 카메라 포즈 데이터를 전처리하는 trajectory_dataset.py로 전달해줍니다.
         if R0 is not None:
             self.trajectory_dataset.init_external_reference(R0,t0)
         traj_out = self.trajectory_dataset[index]

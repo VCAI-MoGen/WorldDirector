@@ -66,6 +66,9 @@ class Diffuser(L.LightningModule):
         self.clatr = clatr
         self.clatr.eval()
 
+        # Track filenames for debugging NaNs
+        self.current_filenames: list[str] = []
+
         # Sampling
         self.num_steps = sampling_kwargs.num_steps
         self.sigma_min = sampling_kwargs.sigma_min
@@ -152,9 +155,21 @@ class Diffuser(L.LightningModule):
     def training_step(self, batch, batch_idx):
         data, mask = batch["traj_feat"], batch["padding_mask"]
 
+        self.current_filenames = []
+        for key, value in batch.items():
+            if key.endswith("_filename"):
+                if isinstance(value, (list, tuple)):
+                    self.current_filenames.extend(list(value))
+                else:
+                    self.current_filenames.append(str(value))
+
         conds = dict()
         if len(self.modalities) > 0:
-            cond_k = [x for x in batch.keys() if "traj" not in x and "feat" in x]
+            cond_k = [
+                x
+                for x in batch.keys()
+                if "traj" not in x and x.endswith("_feat") and "raw" not in x
+            ]
             cond_data = [batch[cond] for cond in cond_k]
             for cond in cond_k:
                 cond_name = cond.replace("_feat", "")
@@ -165,6 +180,34 @@ class Diffuser(L.LightningModule):
                     conds[cond_name] = batch[f"{cond_name}_raw"]
         else:
             cond_data = None
+
+        if not torch.isfinite(data).all():
+            raise RuntimeError(
+                "Non-finite trajectory input detected",
+                batch.get("traj_filename", "unknown"),
+            )
+        if cond_data is not None:
+            for name, tensor in zip(cond_k, cond_data):
+                if not torch.isfinite(tensor).all():
+                    raise RuntimeError(
+                        "Non-finite conditional feature detected",
+                        name,
+                        batch.get(f"{name.replace('_feat', '')}_filename", "unknown"),
+                    )
+
+        if not torch.isfinite(data).all():
+            raise RuntimeError(
+                "Non-finite trajectory input detected",
+                batch.get("traj_filename", "unknown"),
+            )
+        if cond_data is not None:
+            for name, tensor in zip(cond_k, cond_data):
+                if not torch.isfinite(tensor).all():
+                    raise RuntimeError(
+                        "Non-finite conditional feature detected",
+                        name,
+                        batch.get(f"{name.replace('_feat', '')}_filename", "unknown"),
+                    )
 
         # cf edm2 sigma_data normalization / https://arxiv.org/pdf/2312.02696.pdf
         if self.edm2_normalization:
@@ -254,9 +297,21 @@ class Diffuser(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         data, mask = batch["traj_feat"], batch["padding_mask"]
 
+        self.current_filenames = []
+        for key, value in batch.items():
+            if key.endswith("_filename"):
+                if isinstance(value, (list, tuple)):
+                    self.current_filenames.extend(list(value))
+                else:
+                    self.current_filenames.append(str(value))
+
         conds = dict()
         if len(self.modalities) > 0:
-            cond_k = [x for x in batch.keys() if "traj" not in x and "feat" in x]
+            cond_k = [
+                x
+                for x in batch.keys()
+                if "traj" not in x and x.endswith("_feat") and "raw" not in x
+            ]
             cond_data = [batch[cond] for cond in cond_k]
             for cond in cond_k:
                 cond_name = cond.replace("_feat", "")
@@ -267,6 +322,34 @@ class Diffuser(L.LightningModule):
                     conds[cond_name] = batch[f"{cond_name}_raw"]
         else:
             cond_data = None
+
+        if not torch.isfinite(data).all():
+            raise RuntimeError(
+                "Non-finite trajectory input detected",
+                batch.get("traj_filename", "unknown"),
+            )
+        if cond_data is not None:
+            for name, tensor in zip(cond_k, cond_data):
+                if not torch.isfinite(tensor).all():
+                    raise RuntimeError(
+                        "Non-finite conditional feature detected",
+                        name,
+                        batch.get(f"{name.replace('_feat', '')}_filename", "unknown"),
+                    )
+
+        if not torch.isfinite(data).all():
+            raise RuntimeError(
+                "Non-finite trajectory input detected",
+                batch.get("traj_filename", "unknown"),
+            )
+        if cond_data is not None:
+            for name, tensor in zip(cond_k, cond_data):
+                if not torch.isfinite(tensor).all():
+                    raise RuntimeError(
+                        "Non-finite conditional feature detected",
+                        name,
+                        batch.get(f"{name.replace('_feat', '')}_filename", "unknown"),
+                    )
 
         # cf edm2 sigma_data normalization / https://arxiv.org/pdf/2312.02696.pdf
         if self.edm2_normalization:
