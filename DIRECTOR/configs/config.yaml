@@ -15,6 +15,7 @@ xp_name: ${diffuser.loss.name}-${diffuser.network.module.name}-${dataset.traject
 metric_dir: ./metrics
 log_dir: ${results_dir}/${xp_name}/${timestamp}
 checkpoint_path: null
+ckpt_dir_path: ./checkpoints_0920
 
 seed: 42
 save_and_sample_every: 10
