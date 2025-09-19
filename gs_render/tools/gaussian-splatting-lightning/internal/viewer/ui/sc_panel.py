@@ -14,7 +14,27 @@ import json
 import cv2
 import trimesh
 from scipy.spatial.transform import Rotation
-from tqdm import tqdm
+from tqdm import tqdm, trange
+import torch.nn.functional as F
+
+from pytorch3d.structures import Meshes
+from pytorch3d.io import load_ply
+from pytorch3d.renderer import (
+PointLights,
+PerspectiveCameras,
+Materials,
+SoftPhongShader,
+RasterizationSettings,
+MeshRenderer,
+MeshRendererWithFragments,
+MeshRasterizer,
+TexturesVertex)
+from pytorch3d.transforms import matrix_to_axis_angle
+import sys
+sys.path.insert(0, os.path.join('../../../HSI/fitting', 'main'))
+sys.path.insert(0, os.path.join('../../../HSI/fitting', 'common'))
+from utils.smpl_x import smpl_x
+
 
 class ScPanel:
     def __init__(
@@ -28,12 +48,13 @@ class ScPanel:
         self.tab = tab
         self.renderer = self.viewer.viewer_renderer
 
+        self.up_vector = np.array([0.0, 0.0, 1.0])
         self.render_wh = (720, 480)
         self.frame_num = 81
         self.render_mode = "rgb"
         self.root_path = self.viewer.root_path
-        self.data_type_list = ["static", "traj", "detailed"]
 
+        self.data_type_list = ["static", "traj", "detailed"]
         self.current_data_type = self.data_type_list[0]
 
         self.running_mesh = False
@@ -289,6 +310,138 @@ class ScPanel:
                         json.dump(cam_param, f)
                 
                 print("Finish Dumping!")
+
+            auto_dump_image_with_start_end_button = self.server.gui.add_button(
+                "Auto Dump Image (Start, End Point)",
+                color="green",
+                icon=viser.Icon.LIVE_PHOTO,
+                hint="Dump the current render image as an image with start point and end point automatically.",
+            )
+            @auto_dump_image_with_start_end_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                client = event.client
+                assert client is not None
+
+                cameras, render, masks = self.compute_cam_param()
+                self.update_camera(client, cameras[0])
+                start_image = render[0].detach().cpu().numpy().copy().astype(np.uint8)
+                end_image = render[0].detach().cpu().numpy().copy().astype(np.uint8)
+
+                bbox_mask = mask_to_bbox_mask(masks).repeat(1, 1, 1, 3).detach().cpu().numpy().astype(np.uint8)
+
+                start_image[bbox_mask[0] > 0] = 127
+                end_image[bbox_mask[1] > 0] = 127
+
+                human_masked_video = []
+                human_masked_video.append(start_image)
+                for i in range(self.frame_num - 2):
+                    human_masked_video.append(np.ones_like(start_image).astype(np.uint8) * 127)
+                human_masked_video.append(end_image)
+                imageio.mimsave(os.path.join(self.traj_dir_path, 'human_masked_video.mp4'), human_masked_video)
+
+                masked_video = []
+                masked_video.append(bbox_mask[0])
+                for i in range(self.frame_num - 2):
+                    masked_video.append(np.ones_like(bbox_mask[0]).astype(np.uint8))
+                masked_video.append(bbox_mask[1])
+                imageio.mimsave(os.path.join(self.traj_dir_path, 'masked_video.mp4'), masked_video)
+
+                print("Optimization is finished.")
+
+                """
+                cameras = self.get_cameras_from_client(client, img_wh=self.render_wh)
+                render_wh = self.render_wh
+
+                # Render Depth
+                self.server.scene.set_global_visibility(False)
+                depth = self.render(cameras, render_mode="exp_depth")[0]
+                depth_value = depth[:, :, 0:1] # (H, W, 1)
+                depth_map = depth[:, :, 1:].astype(np.uint8) # (H, W, 3)
+                self.server.scene.set_global_visibility(True)
+                
+                depth_path = os.path.join(self.depth_vis_dir_static, '0.png')
+                imageio.imwrite(depth_path, depth_map)
+                depth_npy_path = os.path.join(self.depth_dir_static, '0.npy')
+                np.save(depth_npy_path, depth_value)
+                print(f"Save depth render in {depth_path}\nRender resolution is {depth_map.shape}")
+                print(f"Save depth in {depth_npy_path}\nDepth resolution is {depth_value.shape}")
+                print(f"Max depth: {depth_value.max()}")
+                print(f"Min depth: {depth_value.min()}")
+                
+                for i in range(self.frame_num):
+                    depth_path = os.path.join(self.depth_vis_dir_traj, f'{i}.png')
+                    imageio.imwrite(depth_path, depth_map)
+                    depth_npy_path = os.path.join(self.depth_dir_traj, f'{i}.npy')
+                    np.save(depth_npy_path, depth_value)
+
+                # Render Image
+                self.server.scene.set_global_visibility(False)
+                image = self.render(cameras, render_mode="rgb")[0]
+                self.server.scene.set_global_visibility(True)
+                image_path = os.path.join(self.scene_render_dir_static, '0.png')
+                imageio.imwrite(image_path, image)
+                print(f"Save image in {image_path}\nRender resolution is {image.shape}")
+
+                for i in range(self.frame_num):
+                    image_path = os.path.join(self.scene_render_dir_traj, f'{i}.png')
+                    imageio.imwrite(image_path, image)
+
+                c2w, K = self.get_cam_params(client, render_wh)
+                R = c2w[:3, :3]
+                t = c2w[:3, 3]
+
+                points = np.array([self.start_point.value, self.end_point.value])
+                uv = project_points_to_image(points, K, R, t)
+                start_uv = uv[0].tolist()
+                end_uv = uv[1].tolist()
+
+                image_with_start_point = image.copy()
+                cv2.circle(image_with_start_point, (int(start_uv[0]), int(start_uv[1])), 10, (255, 0, 0), -1)
+                image_path = os.path.join(self.static_dir_path, 'start_point.png')
+                imageio.imwrite(image_path, image_with_start_point)
+
+                image_with_end_point = image.copy()
+                cv2.circle(image_with_end_point, (int(end_uv[0]), int(end_uv[1])), 10, (0, 0, 255), -1)
+                image_path = os.path.join(self.static_dir_path, 'end_point.png')
+                imageio.imwrite(image_path, image_with_end_point)
+
+                # Save start/end point
+                points_path = os.path.join(self.static_dir_path, 'points.json')
+                points = {
+                    "start_point": self.start_point.value,
+                    "end_point": self.end_point.value
+                }
+                with open(points_path, 'w') as f:
+                    json.dump(points, f)
+                print(f"Save points in {points_path}")
+                print(f"Start point: {points["start_point"]}")
+                print(f"End point: {points["end_point"]}")
+
+                # Save camera parameters
+                R = c2w[:3, :3].T.tolist() # w2c
+                t = (-c2w[:3, :3].T @ c2w[:3, 3]).tolist() # w2c
+                focal = [K[0, 0], K[1, 1]]
+                princpt = [render_wh[0] // 2, render_wh[1] // 2]
+
+                cam_param = {
+                    "R": R,
+                    "t": t,
+                    "focal": focal,
+                    "princpt": princpt
+                }
+                json_path = os.path.join(self.cam_param_path_static, "0.json")
+                with open(json_path, 'w') as f:
+                    json.dump(cam_param, f)
+                print(f"Save cam_param in {json_path}")
+
+                for i in range(self.frame_num):
+                    json_path = os.path.join(self.cam_param_path_traj, f"{i}.json")
+                    with open(json_path, 'w') as f:
+                        json.dump(cam_param, f)
+                
+                print("Finish Dumping!")
+                """
+            
     
     def _setup_refine_folder(self):
         with self.server.gui.add_folder("Refine"):
@@ -772,12 +925,18 @@ class ScPanel:
         r = Rotation.from_matrix(R.tolist())
         quat = r.as_quat() # (x, y, z, w)
         quat = [quat[3], quat[0], quat[1], quat[2]] # (w, x, y, z)
-        fov_radians = 2 * np.arctan(2 * princpt[1] / (2 * focal[1]))
+        fov_radians = 2 * np.arctan(2 * princpt[1].cpu() / (2 * focal[1].cpu()))
         client.camera.fov = fov_radians
         client.camera.wxyz = quat
         client.camera.position = t
 
-    def render(self, cameras: Cameras, render_mode="rgb"):
+    def set_rgb_render_mode(self):
+        available_outputs = self.renderer.renderer.get_available_outputs()
+        output_type_info = available_outputs.get("rgb", None)
+        self.renderer._set_output_type("rgb", output_type_info)
+        return
+
+    def render(self, cameras: Cameras, render_mode="rgb", optimizable=False):
         available_outputs = self.renderer.renderer.get_available_outputs()
 
         output_type_info = available_outputs.get(render_mode, None)
@@ -789,17 +948,204 @@ class ScPanel:
         self.renderer._set_output_type(render_mode, output_type_info)
         renders = []
         for camera in cameras:
-            render = self.renderer.get_outputs(camera.to_device("cuda")).detach().cpu().numpy()
             if render_mode == "rgb":
-                render = (render * 255).astype(np.uint8).transpose(1, 2, 0)
+                if optimizable:
+                    render = self.renderer.get_outputs(camera.to_device("cuda")).permute(1, 2, 0) # (H, W, 3)
+                else:
+                    render = self.renderer.get_outputs(camera.to_device("cuda")).detach().cpu().numpy()
+                    render = (render * 255).astype(np.uint8).transpose(1, 2, 0)
             elif render_mode == "exp_depth":
-                depth = render.transpose(1, 2, 0) # (H, W, 3)
-                depth_map = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
-                depth_map = cv2.applyColorMap((depth_map.clip(0.0, 1.0) * 255).astype(np.uint8), cv2.COLORMAP_JET)
-                render = np.concatenate([depth[:, :, 0:1], depth_map], axis=-1) # (H, W, 4)
+                if optimizable:
+                    render = self.renderer.get_outputs(camera.to_device("cuda")).permute(1, 2, 0)[:, :, 0] # (H, W)
+                else:
+                    render = self.renderer.get_outputs(camera.to_device("cuda")).detach().cpu().numpy()
+                    depth = render.transpose(1, 2, 0) # (H, W, 3)
+                    depth_map = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
+                    depth_map = cv2.applyColorMap((depth_map.clip(0.0, 1.0) * 255).astype(np.uint8), cv2.COLORMAP_JET)
+                    render = np.concatenate([depth[:, :, 0:1], depth_map], axis=-1) # (H, W, 4)
             renders.append(render)
-        renders = np.array(renders)
+        if optimizable is False:
+            renders = np.array(renders)
+        else:
+            renders = torch.stack(renders)
         return renders
+
+    def compute_cam_param(self, device="cuda:0"):
+        start_point = torch.tensor(self.start_point.value).to(device)
+        end_point = torch.tensor(self.end_point.value).to(device)
+        points_world = torch.stack([start_point, end_point]).to(device)
+        N = points_world.shape[0]
+
+        center_point = (start_point + end_point) / 2
+        path_vector = end_point - start_point
+        path_length = torch.linalg.norm(path_vector)
+        up_vector = torch.tensor(self.up_vector).float().to(device)
+
+        look_dir = torch.cross(path_vector, up_vector, dim=-1)
+        look_dir = look_dir / torch.linalg.norm(look_dir)
+
+        alpha = torch.tensor(look_dir * 1, device=device, requires_grad=True)
+        optimizer = torch.optim.Adam([alpha], lr=1e-1)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.5)
+
+        pbar = trange(1000, desc="Training", dynamic_ncols=True)
+        for step in pbar:
+            optimizer.zero_grad()
+
+            trans = center_point + alpha
+
+            forward = (center_point - trans) / torch.linalg.norm(center_point - trans)
+            right = torch.cross(forward, up_vector, dim=-1) / torch.linalg.norm(torch.cross(forward, up_vector, dim=-1))
+            camera_up = torch.cross(forward, right, dim=-1)
+            rotation_matrix = torch.stack([right, camera_up, forward], axis=1)
+
+            K = torch.tensor(self.get_K(np.radians(75), self.render_wh), device=device).float()
+
+            R = rotation_matrix.T[None] # w2c
+            t = (-rotation_matrix.T @ trans)[None] # w2c
+            fx = K[0][0][None]
+            fy = K[1][1][None]
+            cx = K[0][2][None].float()
+            cy = K[1][2][None].float()
+            width = torch.tensor(int(cx * 2), device=device, dtype=torch.int)[None]
+            height = torch.tensor(int(cy * 2), device=device, dtype=torch.int)[None]
+            appearance_id = torch.zeros(1, dtype=torch.int).to(device)
+            normalized_appearance_id = torch.zeros(1, dtype=torch.int).to(device)
+            distortion_params = torch.zeros((1, 4), dtype=torch.int).to(device)
+            camera_type = torch.zeros(1, dtype=torch.int).to(device)
+
+            cameras = Cameras(
+                R=R,
+                T=t,
+                fx=fx,
+                fy=fy,
+                cx=cx,
+                cy=cy,
+                width=width,
+                height=height,
+                appearance_id=appearance_id,
+                normalized_appearance_id=normalized_appearance_id,
+                distortion_params=distortion_params,
+                camera_type=camera_type
+            )
+
+            R_batch = R.repeat(N, 1, 1)
+            t_batch = t.repeat(N, 1)
+            focal_batch = torch.cat((fx, fy), dim=-1).repeat(N, 1)
+            princpt_batch = torch.cat((cx, cy), dim=-1).repeat(N, 1)
+            img = self.render(cameras, render_mode="rgb", optimizable=True) * 255
+            renders, depths, masks = self.render_smplx_at_3d_position(points_world, R_batch, t_batch, focal_batch, princpt_batch, img, smplx_scale=1.0)
+
+            bbox_masks = mask_to_bbox_mask(masks)
+
+            bbox_masks /= 255.0
+            start_mask_area = bbox_masks[0].sum()
+            end_mask_area = bbox_masks[1].sum()
+
+            depth = self.render(cameras, render_mode='exp_depth', optimizable=True) # (N, H, W)
+            pc_cam = project_points_to_image(points_world, K, rotation_matrix, trans, include_depth=True).to(depth.device)
+            lower_bound = torch.zeros([2], device=pc_cam.device)
+
+            loss = 0
+
+            loss_pc_in_image = margin_range_loss(pc_cam[:, 0], lower=lower_bound, upper=torch.stack([width]).to(pc_cam.device), margin=50).mean() + \
+                                margin_range_loss(pc_cam[:, 1], lower=lower_bound, upper=torch.stack([height]).to(pc_cam.device), margin=50).mean()
+            
+            loss += loss_pc_in_image
+
+            screen_coord_x, screen_coord_y = pc_cam[:, 0].int(), pc_cam[:, 1].int()
+            pc_in_image = (screen_coord_x >= 0).all() & (screen_coord_x < self.render_wh[0]).all() & (screen_coord_y >= 0).all() & (screen_coord_y < self.render_wh[1]).all()
+            if pc_in_image:
+                depth_from_pc_positions = depth[:, screen_coord_y, screen_coord_x]
+                loss_visible_pc = margin_range_loss(pc_cam[:, 2], lower=lower_bound, upper=depth_from_pc_positions, margin=0.01).mean()
+
+                maximum_mask_ratio = 0.2
+                minimum_mask_ratio = 0.05
+                total_pixel = width * height
+                loss_human_mask = margin_range_loss(start_mask_area, lower=total_pixel * minimum_mask_ratio, upper=total_pixel * maximum_mask_ratio, margin=0.0).mean() + \
+                                    margin_range_loss(end_mask_area, lower=total_pixel * minimum_mask_ratio, upper=total_pixel * maximum_mask_ratio, margin=0.0).mean()
+                loss += 100 * loss_visible_pc + loss_human_mask
+
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            if step == 0:
+                print("Initial Loss:", loss.item())
+
+            if pc_in_image:
+                pbar.set_postfix(loss=f"{loss.item():.2f}", loss_pc_in_image=f"{loss_pc_in_image.item():.2f}", loss_visible_pc=f"{loss_visible_pc.item():.2f}", loss_human_mask=f"{loss_human_mask.item():.2f}")
+            else:
+                pbar.set_postfix(loss=f"{loss.item():.2f}", loss_pc_in_image=f"{loss_pc_in_image.item():.2f}")
+        
+        self.set_rgb_render_mode()
+
+        return cameras, img, masks
+    
+    def render_smplx_at_3d_position(self, points_world, R_w2c, t_w2c, focal, princpt, img, smplx_scale=1.0):
+        """
+        points_world : (N,3)
+        R_w2c       : (N,3,3) world-to-camera rotation
+        t_w2c       : (N,3)  world-to-camera translation
+        focal       : (N, 2) focal length
+        princpt     : (N, 2)
+
+        mask        : (N,H,W)
+        """
+        device = points_world.device
+        R_w2c = R_w2c.to(device)
+        t_w2c = t_w2c.to(device)
+        focal = focal.to(device)
+        princpt = princpt.to(device)
+        smpl_x.layer['neutral'] = smpl_x.layer['neutral'].to(device)
+
+        N = points_world.shape[0]
+        smplx_scale = torch.tensor([smplx_scale]).float().to(device)
+        points_cam = torch.einsum('nij,nj->ni', R_w2c, points_world) + t_w2c
+
+        axis = np.array([1, 0, 0])
+        angle = np.pi
+        yz_inv_axis_angle = torch.tensor((axis * angle))[None].float().to(device)
+
+        output = smpl_x.layer['neutral'](
+                                global_orient = torch.stack([yz_inv_axis_angle] * N).to(device), \
+                                body_pose = torch.zeros((N, 21, 3)).to(device), \
+                                jaw_pose = torch.zeros((N, 3)).to(device), \
+                                leye_pose = torch.zeros((N, 3)).to(device), \
+                                reye_pose = torch.zeros((N, 3)).to(device), \
+                                left_hand_pose = torch.zeros((N, 15, 3)).to(device), \
+                                right_hand_pose = torch.zeros((N, 15, 3)).to(device), \
+                                expression = torch.zeros((N, 10)).to(device), \
+                                betas = torch.zeros((N, 100)).to(device), \
+                                )
+        mesh_cam = output.vertices * smplx_scale[None, None, :]
+        kpt_cam = output.joints[:,smpl_x.kpt['idx'],:] * smplx_scale[None, None, :]
+        root_cam = kpt_cam[:,smpl_x.kpt['root_idx'],:]
+
+        mesh_cam = mesh_cam - root_cam[:, None, :]
+        kpt_cam = kpt_cam - root_cam[:, None, :]
+
+        R_billboard = rotation_for_billboarding(points_cam, torch.zeros((N, 3)).to(device))
+        verts = mesh_cam
+        verts = torch.einsum('nij,ntj->nti', R_billboard, verts)  # (N,T,3)
+        verts = verts + points_cam[:, None, :]
+
+        cam_param = {
+            'R': R_w2c,
+            't': t_w2c,
+            'focal': focal,
+            'princpt': princpt
+        }
+        face = torch.tensor(smpl_x.face[None]).repeat((N, 1, 1)).to(device)
+        images, depth, mask = render_smplx(verts, face, cam_param, img) # (N, H, W, 3), (N, H, W, 1), (N, H, W, 1)
+
+        # Debugging
+        imageio.imwrite(os.path.join(self.static_dir_path, 'start_smpl.png'), images[0].detach().cpu().numpy().astype(np.uint8))
+        imageio.imwrite(os.path.join(self.static_dir_path, 'end_smpl.png'), images[1].detach().cpu().numpy().astype(np.uint8))
+        # imageio.imwrite(os.path.join(self.static_dir_path, 'start_mask.png'), bbox_mask[0].repeat(1, 1, 3).detach().cpu().numpy().astype(np.uint8))
+        # imageio.imwrite(os.path.join(self.static_dir_path, 'end_mask.png'), bbox_mask[1].repeat(1, 1, 3).detach().cpu().numpy().astype(np.uint8))
+
+        return images, depth, mask
+            
 
 def depth_to_world_pc(depth_map, K, R_c2w, t_c2w, screen_pos=None):
     """
@@ -823,7 +1169,7 @@ def depth_to_world_pc(depth_map, K, R_c2w, t_c2w, screen_pos=None):
     points = (R_c2w @ points.T).T + t_c2w
     return points
 
-def project_points_to_image(points_world, K, R_c2w, t_c2w):
+def project_points_to_image(points_world, K, R_c2w, t_c2w, include_depth=False):
     """
     points_world : (N,3)
     K           : (3,3) intrinsic matrix
@@ -839,12 +1185,110 @@ def project_points_to_image(points_world, K, R_c2w, t_c2w):
     X_c = (R_w2c @ points_world.T).T + t_w2c  # (N,3)
 
     z = X_c[:, 2]
-    mask = z > 0
 
     # homogeneous projection
     uv = (K @ (X_c.T / z)).T  # (N,3)
-    uv = uv[:, :2]
 
-    uv[~mask] = np.nan
+    if include_depth is False:
+        uv = uv[:, :2]
+    else:
+        uv[:, 2] = X_c[:, 2]
 
     return uv
+
+def margin_range_loss(x, lower=None, upper=None, margin=0.1):
+    assert lower is not None or upper is not None
+    inner_lower = lower + margin
+    inner_upper = upper - margin
+    lower_loss = F.relu(inner_lower - x)
+    upper_loss = F.relu(x - inner_upper)
+    return lower_loss + upper_loss
+
+def mask_to_bbox_mask(mask: torch.Tensor) -> torch.Tensor:
+    """
+    mask: (N, H, W, 1) torch.uint8, binary human mask (0 or 255)
+    return: (N, H, W, 1) torch.uint8, bounding box mask
+    """
+    N, H, W, _ = mask.shape
+    mask = mask.squeeze(-1)  # (N, H, W)
+
+    for i in range(N):
+        ys, xs = torch.nonzero(mask[i] > 0, as_tuple=True)
+
+        if ys.numel() == 0 or xs.numel() == 0:
+            continue
+
+        y_min, y_max = ys.min(), ys.max()
+        x_min, x_max = xs.min(), xs.max()
+
+        mask[i, y_min:y_max+1, x_min:x_max+1] = 255
+
+    return mask.unsqueeze(-1)
+
+def render_smplx(mesh, face, cam_param, bkg, blend_ratio=1.0):
+    render_shape = (int(cam_param['princpt'][0][1] * 2), int(cam_param['princpt'][0][0] * 2)) # height, width
+    batch_size, vertex_num = mesh.shape[:2]
+    textures = TexturesVertex(verts_features=torch.ones((batch_size,vertex_num,3)).float().cuda())
+    mesh = torch.stack((-mesh[:,:,0], -mesh[:,:,1], mesh[:,:,2]),2) # reverse x- and y-axis following PyTorch3D axis direction
+    mesh = Meshes(mesh, face, textures)
+
+    cameras = PerspectiveCameras(focal_length=cam_param['focal'], 
+                                principal_point=cam_param['princpt'], 
+                                device='cuda',
+                                in_ndc=False,
+                                image_size=torch.LongTensor(render_shape).cuda().view(1,2))
+    raster_settings = RasterizationSettings(image_size=render_shape, blur_radius=0.0, faces_per_pixel=1, bin_size=0, perspective_correct=True)
+    rasterizer = MeshRasterizer(cameras=cameras, raster_settings=raster_settings).cuda()
+    lights = PointLights(device='cuda')
+    shader = SoftPhongShader(device='cuda', cameras=cameras, lights=lights)
+    materials = Materials(
+	device='cuda',
+	specular_color=[[0.0, 0.0, 0.0]],
+	shininess=0.0
+    )
+
+    # render
+    renderer = MeshRendererWithFragments(rasterizer=rasterizer, shader=shader)
+    images, fragments = renderer(mesh, materials=materials)
+
+    # background masking
+    depth = fragments.zbuf
+    is_fg = torch.relu(depth)
+    images = images[:,:,:,:3] * 255 # (N, H, W, 3)
+    mask = (is_fg * 255) # (N, H, W, 1)
+    images = images * blend_ratio + bkg / 255 * (1 - blend_ratio)
+    images = images * is_fg + bkg * torch.logical_not(is_fg)
+    return images, depth, mask
+
+def mask_to_bbox(mask):
+    ys, xs = np.where(mask > 0)
+    x1, y1, x2, y2 = xs.min(), ys.min(), xs.max(), ys.max()
+    return (x1, y1, x2, y2)
+
+def interpolate_bbox(bbox1, bbox2, num_steps):
+    bboxes = []
+    for t in range(num_steps + 1):
+        alpha = t / num_steps
+        interp = (1 - alpha) * np.array(bbox1) + alpha * np.array(bbox2)
+        bboxes.append(interp.astype(int))
+    return bboxes
+
+def bbox_to_mask(bbox, shape):
+    mask = np.zeros(shape, dtype=np.uint8)
+    x1, y1, x2, y2 = bbox
+    cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
+    return mask
+
+def rotation_for_billboarding(obj_pos, cam_pos):
+    forward = obj_pos - cam_pos
+    forward = forward / torch.norm(forward, dim=-1, keepdim=True)
+
+    up = torch.tensor([0.0, 1.0, 0.0])[None].float().to(forward.device)
+
+    right = torch.cross(up, forward, dim=-1)
+    right = right / torch.norm(right, dim=-1, keepdim=True)
+
+    true_up = torch.cross(forward, right, dim=-1)
+
+    R = torch.stack([right, true_up, forward], dim=1)  # 3x3
+    return R
