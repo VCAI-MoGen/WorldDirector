@@ -8,3 +8,4 @@ num_rawfeats: ${dataset.num_rawfeats}
 num_cams: ${dataset.num_cams}
 standardize: false
 standardization: ${dataset.standardization}
+align_first_frmae: true

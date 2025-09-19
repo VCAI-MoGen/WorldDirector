@@ -3,6 +3,7 @@ _target_: src.datasets.modalities.char_dataset.CharacterDataset
 name: char
 dataset_dir: ${dataset.dataset_dir}
 standardize: ${dataset.trajectory.standardize}
+align_first_frmae: ${dataset.trajectory.align_first_frmae}
 standardization: ${dataset.standardization}
 num_feats: ${eval:'3 if ${dataset.char.sequential} else ${dataset.num_cams} * 3'}
 num_cams: ${dataset.num_cams}
