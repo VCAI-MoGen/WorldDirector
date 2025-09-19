@@ -12,6 +12,11 @@ from typing import Tuple
 from utils.file_utils import load_txt
 from utils.rotation_utils import compute_rotation_matrix_from_ortho6d
 
+import pickle
+from smplx import SMPLX
+from pytorch3d.transforms import matrix_to_axis_angle
+from pytorch3d.transforms import matrix_to_rotation_6d
+
 
 # ------------------------------------------------------------------------------------- #
 
@@ -30,6 +35,7 @@ class TrajectoryDataset(Dataset):
         num_feats: int,
         num_cams: int,
         standardize: bool,
+        align_first_frmae: bool,
         **kwargs,
     ):
         super().__init__()
@@ -38,6 +44,7 @@ class TrajectoryDataset(Dataset):
         self.dataset_dir = Path(dataset_dir)
         self.data_dir = self.dataset_dir / "traj"
         self.intrinsics_dir = self.dataset_dir / "intrinsics"
+        self.char_traj_dir = self.dataset_dir / "char"
 
         self.num_rawfeats = num_rawfeats
         self.num_feats = num_feats
@@ -52,6 +59,14 @@ class TrajectoryDataset(Dataset):
             self.shift_mean = torch.Tensor(mean_std["shift_mean"])
             self.shift_std = torch.Tensor(mean_std["shift_std"])
             self.velocity = mean_std["velocity"]
+        else:
+            self.velocity = False
+        self.align_first_frame = align_first_frmae
+
+        # Add smplx
+        self.smpl_dir = self.dataset_dir / "smplh"
+        self.smplx_model_path = self.model_root = self.dataset_dir / "human_model"
+        self.smplx_model = SMPLX(model_path=str(self.smplx_model_path), model_type="smplx", gender="neutral")
 
     # --------------------------------------------------------------------------------- #
 
@@ -70,6 +85,21 @@ class TrajectoryDataset(Dataset):
         return self
 
     # --------------------------------------------------------------------------------- #
+
+    def get_smplx_info(self, filename: str):
+        smplx_info = {}
+        smpl_path = self.smpl_dir / (filename + ".pkl")
+        with open(smpl_path, "rb") as f:
+            params = pickle.load(f, encoding="latin1")
+        
+        # Remove gradients
+        for key in params.keys():
+            params[key] = params[key].detach()
+        # params.keys(): ['betas', 'global_orient', 'body_pose', 'left_hand_pose', 'right_hand_pose', 'transl']
+        # shape: [(N, 10), (N, 1, 3, 3), (N, 21, 3, 3), (N, 15, 3, 3), (N, 15, 3, 3), (N, 3)]
+        smplx_info["params"] = params
+        
+        return smplx_info
 
     def get_feature(
         self, raw_matrix_trajectory: TensorType["num_cams", 4, 4]
@@ -131,7 +161,31 @@ class TrajectoryDataset(Dataset):
         trajectory = read_kitti_poses_file(trajectory_path)
         matrix_trajectory = torch.from_numpy(np.array(trajectory.poses_se3)).to(
             torch.float32
-        )
+        ) # (N, 4, 4)
+
+        if self.align_first_frame:
+            # Load SMPL-X params
+            char_filename = filename + ".npy"
+            char_path = self.char_traj_dir / char_filename
+            char_feature = torch.from_numpy(np.load((char_path))).to(torch.float32) # (N, 3)
+
+            smplx_info = self.get_smplx_info(filename)
+            smplx_params = smplx_info['params']
+            root_pose = smplx_params['global_orient'] # (N, 1, 3, 3)
+            root_pose = root_pose[:, 0, :, :] # (N, 3, 3)
+
+            R0 = root_pose[0, :, :] # (3, 3)
+            R0_inv = R0.T
+            t0 = char_feature[0:1, :] # (1, 3)
+
+            R_cam = matrix_trajectory[:, :3, :3]
+            t_cam = matrix_trajectory[:, :3, 3]
+
+            R_cam = R0_inv @ R_cam
+            t_cam = (t_cam - t0) @ R0_inv.T
+
+            matrix_trajectory[:, :3, :3] = R_cam
+            matrix_trajectory[:, :3, 3] = t_cam
 
         intrinsics_filename = filename + ".npy"
         intrinsics_path = self.intrinsics_dir / intrinsics_filename

@@ -5,6 +5,11 @@ import torch
 from torch.utils.data import Dataset
 import torch.nn.functional as F
 
+import pickle
+from smplx import SMPLX
+from pytorch3d.transforms import matrix_to_axis_angle
+from pytorch3d.transforms import matrix_to_rotation_6d
+
 # ------------------------------------------------------------------------------------- #
 
 
@@ -14,6 +19,7 @@ class CharacterDataset(Dataset):
         name: str,
         dataset_dir: str,
         standardize: bool,
+        align_first_frmae: bool,
         num_feats: int,
         num_cams: int,
         sequential: bool,
@@ -38,6 +44,9 @@ class CharacterDataset(Dataset):
             self.norm_mean = torch.Tensor(mean_std["norm_mean_h"])[:, None]
             self.norm_std = torch.Tensor(mean_std["norm_std_h"])[:, None]
             self.velocity = mean_std["velocity"]
+        else:
+            self.velocity = False
+        self.align_first_frame = align_first_frmae
 
         self.num_cams = num_cams
         self.num_feats = num_feats
@@ -46,6 +55,41 @@ class CharacterDataset(Dataset):
         self.sequential = sequential # True
 
         self.load_vertices = load_vertices # True when visualization
+
+        # Add smplx
+        self.smpl_dir = self.dataset_dir / "smplh"
+        self.smplx_model_path = self.model_root = self.dataset_dir / "human_model"
+        self.smplx_model = SMPLX(model_path=str(self.smplx_model_path), model_type="smplx", gender="neutral")
+
+    def get_smplx_info(self, filename: str):
+        smplx_info = {}
+        smpl_path = self.smpl_dir / (filename + ".pkl")
+        with open(smpl_path, "rb") as f:
+            params = pickle.load(f, encoding="latin1")
+        
+        # Remove gradients
+        for key in params.keys():
+            params[key] = params[key].detach()
+        
+        # Catch trash data
+        """
+        flag = False
+        for key in params.keys():
+            if torch.isnan(params[key]).any() or torch.isinf(params[key]).any():
+                flag = True
+        if flag:
+            with open('trash.txt', 'a') as f:
+                f.writelines(f"{filename}\n")
+        """
+        # params.keys(): ['betas', 'global_orient', 'body_pose', 'left_hand_pose', 'right_hand_pose', 'transl']
+        # shape: [(N, 10), (N, 1, 3, 3), (N, 21, 3, 3), (N, 15, 3, 3), (N, 15, 3, 3), (N, 3)]
+        smplx_info["params"] = params
+        
+        # TODO: render mesh
+        if self.load_vertices:
+            pass
+        
+        return smplx_info
 
     def __len__(self):
         return len(self.filenames)
@@ -56,15 +100,20 @@ class CharacterDataset(Dataset):
         char_filename = filename + ".npy"
         char_path = self.data_dir / char_filename
 
-        raw_char_feature = torch.from_numpy(np.load((char_path))).to(torch.float32)
+        # raw data for visualization
+        raw_char_feature = torch.from_numpy(np.load((char_path))).to(torch.float32) # (N, 3)
         padding_size = self.num_cams - raw_char_feature.shape[0]
         padded_raw_char_feature = F.pad(
             raw_char_feature, (0, 0, 0, padding_size)
         ).permute(1, 0)
 
+        # Load SMPL-X params
+        smplx_info = self.get_smplx_info(filename)
+        smplx_params = smplx_info['params']
+
         center_path = self.center_dir / char_filename  # Center to offset mesh
         center_offset = torch.from_numpy(np.load(center_path)[0]).to(torch.float32)
-        if self.load_vertices:
+        if self.load_vertices: # True when visualization
             vert_path = self.vert_dir / char_filename
             raw_verts = np.load(vert_path, allow_pickle=True)[()]
             if raw_verts["vertices"] is None:
@@ -80,13 +129,14 @@ class CharacterDataset(Dataset):
                 verts -= center_offset
                 padded_verts = F.pad(verts, (0, 0, 0, 0, 0, padding_size))
                 padded_faces = F.pad(faces, (0, 0, 0, 0, 0, padding_size))
-
+        
+        # Input data for model
         char_feature = raw_char_feature.clone()
-        if self.velocity:
+        if self.velocity: # False
             velocity = char_feature[1:].clone() - char_feature[:-1].clone()
             char_feature = torch.cat([raw_char_feature[0][None], velocity])
 
-        if self.standardize:
+        if self.standardize: # False
             # Normalize the first frame (orgin) and the rest (velocity) separately
             if len(self.norm_mean) == 6:
                 char_feature[0] -= self.norm_mean[:3, 0].to(raw_char_feature.device)
@@ -97,6 +147,19 @@ class CharacterDataset(Dataset):
             else:
                 char_feature -= self.norm_mean[:, 0].to(raw_char_feature.device)
                 char_feature /= self.norm_std[:, 0].to(raw_char_feature.device)
+        
+        root_pose = smplx_params['global_orient'] # (N, 1, 3, 3)
+        root_pose = root_pose[:, 0, :, :] # (N, 3, 3)
+
+        R0 = root_pose[0, :, :] # (3, 3)
+        R0_inv = R0.T
+        t0 = char_feature[0:1, :] # (1, 3)
+
+        # Normalize
+        if self.align_first_frame:
+            char_feature = (char_feature - t0) @ R0_inv.T
+            root_pose = R0_inv @ root_pose
+        
         padded_char_feature = F.pad(
             char_feature,
             (0, 0, 0, self.num_cams - char_feature.shape[0]),
