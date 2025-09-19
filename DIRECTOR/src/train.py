@@ -35,7 +35,7 @@ def main(config: DictConfig) -> Optional[float]:
         logger = None
 
     checkpoint_callback = ModelCheckpoint(
-        every_n_epochs=config.save_and_sample_every, save_top_k=-1
+        dirpath=config.ckpt_dir_path, filename='{epoch}', every_n_epochs=config.save_and_sample_every, save_top_k=-1
     )
     fix_nan = FixNANinGrad(monitor=["train/loss"])
 
