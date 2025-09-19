@@ -44,7 +44,7 @@ class TrajectoryDataset(Dataset):
         self.num_cams = num_cams
 
         self.augmentation = None
-        self.standardize = standardize
+        self.standardize = standardize # False
         if self.standardize:
             mean_std = kwargs["standardization"]
             self.norm_mean = torch.Tensor(mean_std["norm_mean"])

@@ -27,12 +27,12 @@ class CharacterDataset(Dataset):
         self.name = name
         self.dataset_dir = Path(dataset_dir)
         self.traj_dir = self.dataset_dir / "traj"
-        self.data_dir = self.dataset_dir / self.name
+        self.data_dir = self.dataset_dir / self.name # char
         self.vert_dir = self.dataset_dir / "vert_decimated"
         self.center_dir = self.dataset_dir / "char_raw"
 
         self.filenames = None
-        self.standardize = standardize
+        self.standardize = standardize # False
         if self.standardize:
             mean_std = kwargs["standardization"]
             self.norm_mean = torch.Tensor(mean_std["norm_mean_h"])[:, None]
@@ -43,9 +43,9 @@ class CharacterDataset(Dataset):
         self.num_feats = num_feats
         self.num_vertices = num_vertices
         self.num_faces = num_faces
-        self.sequential = sequential
+        self.sequential = sequential # True
 
-        self.load_vertices = load_vertices
+        self.load_vertices = load_vertices # True when visualization
 
     def __len__(self):
         return len(self.filenames)
