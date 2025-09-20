@@ -12,4 +12,4 @@ shift_std: [1.13433516, 1.19061042, 1.58744263]
 norm_mean_h: [6.676e-05, -5.084e-05, -7.782e-04]
 norm_std_h: [0.0105, 0.006958, 0.01145]
 
-velocity: false
+velocity: true
