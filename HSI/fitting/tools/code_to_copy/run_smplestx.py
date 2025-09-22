@@ -103,6 +103,7 @@ def main():
         if len(yolo_bbox)<1:
             # save original image if no bbox
             num_bbox = 0
+            print(f"{frame_idx} Dropped!")
         elif not args.multi_person:
             # only select the largest bbox
             num_bbox = 1
