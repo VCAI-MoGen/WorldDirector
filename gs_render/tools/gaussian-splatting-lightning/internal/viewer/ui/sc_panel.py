@@ -542,6 +542,7 @@ class ScPanel:
                 depth_map = depth[:, :, :, 1:].astype(np.uint8) # (N, H, W, 3)
                 self.server.scene.set_global_visibility(True)
 
+                self.set_rgb_render_mode()
                 self.update_camera(client, cameras[0])
                 
                 for i in range(depth.shape[0]):
@@ -746,8 +747,7 @@ class ScPanel:
                         [0, fy, cy],
                         [0,  0,  1]
                     ])
-
-                    if self.show_optimized_depth_checkbox:
+                    if self.show_optimized_depth_checkbox.value:
                         pc_rgb = video_frames[i].reshape(-1, 3)
                         pc_world = depth_to_world_pc(optimized_depths[i], K, c2w_R, c2w_t)
                     else:
@@ -951,8 +951,12 @@ class ScPanel:
             if render_mode == "rgb":
                 if optimizable:
                     render = self.renderer.get_outputs(camera.to_device("cuda")).permute(1, 2, 0) # (H, W, 3)
+                     # Clipping
+                    render = torch.clamp(render, 0.0, 1.0)
                 else:
                     render = self.renderer.get_outputs(camera.to_device("cuda")).detach().cpu().numpy()
+                    # Clipping
+                    render = np.clip(render, 0.0, 1.0)
                     render = (render * 255).astype(np.uint8).transpose(1, 2, 0)
             elif render_mode == "exp_depth":
                 if optimizable:
