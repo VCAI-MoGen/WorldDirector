@@ -146,3 +146,4 @@ dmypy.json
 /metrics
 *.rrd
 /et-data
+checkpoints_train
