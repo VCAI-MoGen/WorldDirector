@@ -65,14 +65,25 @@ class MultimodalDataset(Dataset):
 
     def __getitem__(self, index):
         traj_out = self.trajectory_dataset[index]
-        traj_filename, traj_feature, padding_mask, intrinsics = traj_out
+        if self.trajectory_dataset.align_first_frame:
+            traj_filename, traj_feature, padding_mask, intrinsics, R0_inv, t0 = traj_out
+            out = {
+                "traj_filename": traj_filename,
+                "traj_feat": traj_feature,
+                "padding_mask": padding_mask,
+                "intrinsics": intrinsics,
+                "R0_inv": R0_inv,
+                "t0": t0,
+            }
+        else:
+            traj_filename, traj_feature, padding_mask, intrinsics = traj_out
 
-        out = {
-            "traj_filename": traj_filename,
-            "traj_feat": traj_feature,
-            "padding_mask": padding_mask,
-            "intrinsics": intrinsics,
-        }
+            out = {
+                "traj_filename": traj_filename,
+                "traj_feat": traj_feature,
+                "padding_mask": padding_mask,
+                "intrinsics": intrinsics,
+            }
 
         for modality_name, modality_dataset in self.modality_datasets.items():
             modality_filename, modality_feature, modality_raw = modality_dataset[index]

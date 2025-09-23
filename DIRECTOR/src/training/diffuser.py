@@ -148,9 +148,16 @@ class Diffuser(L.LightningModule):
     def on_train_epoch_start(self):
         self.get_matrix = self.trainer.datamodule.train_dataset.get_matrix
         self.v_get_matrix = self.trainer.datamodule.eval_dataset.get_matrix
+        self.get_feature = self.trainer.datamodule.train_dataset.get_feature
+        self.v_get_feature = self.trainer.datamodule.eval_dataset.get_feature
 
     def training_step(self, batch, batch_idx):
         data, mask = batch["traj_feat"], batch["padding_mask"]
+        
+        # ['traj_filename', 'traj_feat', 'padding_mask', 'intrinsics', 
+        # 'char_filename', 'char_feat', 'char_raw', 'char_padding_mask', 
+        # 'caption_filename', 'caption_feat', 'caption_raw', 'caption_padding_mask'
+        # 'R0_inv', 't0'] if align_first_frame is True
 
         conds = dict()
         if len(self.modalities) > 0:
@@ -186,6 +193,32 @@ class Diffuser(L.LightningModule):
 
         # Infer CLaTr features
         _, gen_data = self.sample(self.ema.ema_model, data, cond_data, mask)
+        if "R0_inv" in batch and "t0" in batch: # True if align_first_frmae is True
+            R0_inv = batch["R0_inv"] # (B, 3, 3)
+            t0 = batch["t0"] # (B, 1, 3)
+            ref_traj = torch.stack([self.v_get_matrix(x) for x in data]) # (B, N, 4, 4)
+            gen_traj = torch.stack([self.get_matrix(x) for x in gen_data]) # (B, N, 4, 4)
+
+            R_ref = ref_traj[:, :, :3, :3]
+            t_ref = ref_traj[:, :, :3, 3]
+            R_gen = gen_traj[:, :, :3, :3]
+            t_gen = gen_traj[:, :, :3, 3]
+
+            R_ref = R0_inv.transpose(-1, -2).unsqueeze(1) @ R_ref
+            t_ref = torch.einsum("bij, bnj -> bni", R0_inv.transpose(-1, -2), t_ref) + t0
+
+            R_gen = R0_inv.transpose(-1, -2).unsqueeze(1) @ R_gen
+            t_gen = torch.einsum("bij, bnj -> bni", R0_inv.transpose(-1, -2), t_gen) + t0
+
+            ref_traj[:, :, :3, :3] = R_ref
+            ref_traj[:, :, :3, 3] = t_ref
+            gen_traj[:, :, :3, :3] = R_gen
+            gen_traj[:, :, :3, 3] = t_gen
+            
+            # TODO: Should we handle the padded ones?
+            data = torch.stack([self.v_get_feature(x) for x in ref_traj])
+            gen_data = torch.stack([self.get_feature(x) for x in gen_traj])
+        
         clip_seq = batch["caption_raw"]["clip_seq_caption"]
         clip_seq_mask = batch["caption_raw"]["clip_seq_mask"]
         with torch.autocast(device_type=data.device.type, dtype=data.dtype):
@@ -250,6 +283,8 @@ class Diffuser(L.LightningModule):
     def on_validation_epoch_start(self):
         self.get_matrix = self.trainer.datamodule.train_dataset.get_matrix
         self.v_get_matrix = self.trainer.datamodule.eval_dataset.get_matrix
+        self.get_feature = self.trainer.datamodule.train_dataset.get_feature
+        self.v_get_feature = self.trainer.datamodule.eval_dataset.get_feature
 
     def validation_step(self, batch, batch_idx):
         data, mask = batch["traj_feat"], batch["padding_mask"]
@@ -280,6 +315,32 @@ class Diffuser(L.LightningModule):
 
         # Infer CLaTr features
         _, gen_data = self.sample(self.ema.ema_model, data, cond_data, mask)
+        if "R0_inv" in batch and "t0" in batch: # True if align_first_frmae is True
+            R0_inv = batch["R0_inv"] # (B, 3, 3)
+            t0 = batch["t0"] # (B, 1, 3)
+            ref_traj = torch.stack([self.v_get_matrix(x) for x in data]) # (B, N, 4, 4)
+            gen_traj = torch.stack([self.get_matrix(x) for x in gen_data]) # (B, N, 4, 4)
+
+            R_ref = ref_traj[:, :, :3, :3]
+            t_ref = ref_traj[:, :, :3, 3]
+            R_gen = gen_traj[:, :, :3, :3]
+            t_gen = gen_traj[:, :, :3, 3]
+
+            R_ref = R0_inv.transpose(-1, -2).unsqueeze(1) @ R_ref
+            t_ref = torch.einsum("bij, bnj -> bni", R0_inv.transpose(-1, -2), t_ref) + t0
+
+            R_gen = R0_inv.transpose(-1, -2).unsqueeze(1) @ R_gen
+            t_gen = torch.einsum("bij, bnj -> bni", R0_inv.transpose(-1, -2), t_gen) + t0
+
+            ref_traj[:, :, :3, :3] = R_ref
+            ref_traj[:, :, :3, 3] = t_ref
+            gen_traj[:, :, :3, :3] = R_gen
+            gen_traj[:, :, :3, 3] = t_gen
+            
+            # TODO: Should we handle the padded ones?
+            data = torch.stack([self.v_get_feature(x) for x in ref_traj])
+            gen_data = torch.stack([self.get_feature(x) for x in gen_traj])
+        
         clip_seq = batch["caption_raw"]["clip_seq_caption"]
         clip_seq_mask = batch["caption_raw"]["clip_seq_mask"]
         with torch.autocast(device_type=data.device.type, dtype=data.dtype):

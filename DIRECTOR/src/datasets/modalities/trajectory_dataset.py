@@ -60,7 +60,7 @@ class TrajectoryDataset(Dataset):
             self.shift_std = torch.Tensor(mean_std["shift_std"])
             self.velocity = mean_std["velocity"]
         else:
-            self.velocity = False
+            self.velocity = True
         self.align_first_frame = align_first_frmae
 
         # Add smplx
@@ -200,12 +200,25 @@ class TrajectoryDataset(Dataset):
         padding_mask = torch.ones((self.num_cams))
         padding_mask[trajectory_feature.shape[1] :] = 0
 
-        return (
+        return_value = (
             trajectory_filename,
             padded_trajectory_feature,
             padding_mask,
             intrinsics,
         )
+
+        # Return R0_inv and t0
+        if self.align_first_frame:
+            return_value = (
+                trajectory_filename,
+                padded_trajectory_feature,
+                padding_mask,
+                intrinsics,
+                R0_inv,
+                t0
+            )
+
+        return return_value
 
     def __len__(self):
         return len(self.filenames)

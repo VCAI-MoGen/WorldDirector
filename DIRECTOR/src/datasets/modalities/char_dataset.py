@@ -45,7 +45,7 @@ class CharacterDataset(Dataset):
             self.norm_std = torch.Tensor(mean_std["norm_std_h"])[:, None]
             self.velocity = mean_std["velocity"]
         else:
-            self.velocity = False
+            self.velocity = True
         self.align_first_frame = align_first_frmae
 
         self.num_cams = num_cams
@@ -132,7 +132,20 @@ class CharacterDataset(Dataset):
         
         # Input data for model
         char_feature = raw_char_feature.clone()
-        if self.velocity: # False
+
+        root_pose = smplx_params['global_orient'] # (N, 1, 3, 3)
+        root_pose = root_pose[:, 0, :, :] # (N, 3, 3)
+
+        R0 = root_pose[0, :, :] # (3, 3)
+        R0_inv = R0.T
+        t0 = char_feature[0:1, :] # (1, 3)
+
+        # Normalize
+        if self.align_first_frame:
+            char_feature = (char_feature - t0) @ R0_inv.T
+            root_pose = R0_inv @ root_pose
+        
+        if self.velocity:
             velocity = char_feature[1:].clone() - char_feature[:-1].clone()
             char_feature = torch.cat([raw_char_feature[0][None], velocity])
 
@@ -147,18 +160,6 @@ class CharacterDataset(Dataset):
             else:
                 char_feature -= self.norm_mean[:, 0].to(raw_char_feature.device)
                 char_feature /= self.norm_std[:, 0].to(raw_char_feature.device)
-        
-        root_pose = smplx_params['global_orient'] # (N, 1, 3, 3)
-        root_pose = root_pose[:, 0, :, :] # (N, 3, 3)
-
-        R0 = root_pose[0, :, :] # (3, 3)
-        R0_inv = R0.T
-        t0 = char_feature[0:1, :] # (1, 3)
-
-        # Normalize
-        if self.align_first_frame:
-            char_feature = (char_feature - t0) @ R0_inv.T
-            root_pose = R0_inv @ root_pose
         
         padded_char_feature = F.pad(
             char_feature,
