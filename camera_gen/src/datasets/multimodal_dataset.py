@@ -64,45 +64,28 @@ class MultimodalDataset(Dataset):
     # --------------------------------------------------------------------------------- #
 
     def __getitem__(self, index):
-        R0=t0=None
-        char_key=None
-        for k in self.modality_datasets.keys():
-            if "char" in k:
-                char_key = k 
-                break
-        out={}
-
-        if char_key is not None: 
-            char_filename, char_feat, char_raw = self.modality_datasets[char_key][index]
-            if isinstance(char_raw, dict) and "char_root_ref" in char_raw:
-                R0 = char_raw["char_root_ref"]["R0"]
-                t0 = char_raw["char_root_ref"]["t0"]
-
-            out.update({
-                f"{char_key}_filename" : char_filename,
-                f"{char_key}_feat" : char_feat,
-                f"{char_key}_raw" : char_raw,
-            })
-        else: 
-            out = {}
-        ### 여기서 char_dataset의 R0/t0를 init_external_reference 함수를 통해 초기 카메라 포즈 데이터를 전처리하는 trajectory_dataset.py로 전달해줍니다.
-        if R0 is not None:
-            self.trajectory_dataset.init_external_reference(R0,t0)
         traj_out = self.trajectory_dataset[index]
-        traj_filename, traj_feature, padding_mask, intrinsics = traj_out
+        if self.trajectory_dataset.align_first_frame:
+            traj_filename, traj_feature, padding_mask, intrinsics, R0_inv, t0 = traj_out
+            out = {
+                "traj_filename": traj_filename,
+                "traj_feat": traj_feature,
+                "padding_mask": padding_mask,
+                "intrinsics": intrinsics,
+                "R0_inv": R0_inv,
+                "t0": t0,
+            }
+        else:
+            traj_filename, traj_feature, padding_mask, intrinsics = traj_out
 
-        self.trajectory_dataset.clear_external_reference()
-
-        out.update({
-            "traj_filename": traj_filename,
-            "traj_feat": traj_feature,
-            "padding_mask": padding_mask,
-            "intrinsics": intrinsics,
-        })
+            out = {
+                "traj_filename": traj_filename,
+                "traj_feat": traj_feature,
+                "padding_mask": padding_mask,
+                "intrinsics": intrinsics,
+            }
 
         for modality_name, modality_dataset in self.modality_datasets.items():
-            if modality_name == char_key:
-                continue
             modality_filename, modality_feature, modality_raw = modality_dataset[index]
             assert traj_filename.split(".")[0] == modality_filename.split(".")[0]
             out[f"{modality_name}_filename"] = modality_filename
