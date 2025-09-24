@@ -192,7 +192,7 @@ def main():
                         'princpt': [original_img_width / 2, original_img_height / 2], \
                         'img_size_wh': [original_img_width, original_img_height], \
                         'pad_ratio': 0.0}, f)
-        video_save.close()
+    video_save.close()
 
 if __name__ == "__main__":
     main()
