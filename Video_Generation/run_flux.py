@@ -22,7 +22,7 @@ scene_render_image_path = os.path.join(scene_render_image_dir, '0.png')
 output_path = os.path.join(static_path, 'frames')
 os.makedirs(output_path, exist_ok=True)
 
-text_prompt = "Add a standing human figure that looks proportionate to the scene, seamlessly integrated into the existing environment."
+text_prompt = "Add a standing human figure that looks proportionate to the scene, seamlessly integrated into the existing environment, facing the camera."
 
 os.chdir('./flux')
 cmd = f'python -m flux kontext --img_cond_path {scene_render_image_path} --prompt "{text_prompt}"  --num_steps 30 --aspect_ratio "3:2" --guidance 2.5 --seed 1 --output_dir {output_path}'
