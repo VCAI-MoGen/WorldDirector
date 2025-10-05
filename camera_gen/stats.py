@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import argparse
@@ -6,12 +7,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
-
 import numpy as np
 import torch
 from evo.tools.file_interface import read_kitti_poses_file
 
+
 DEFAULT_DTYPE = torch.float32
+
 
 @dataclass
 class Stats:
@@ -22,13 +24,11 @@ class Stats:
     dtype: torch.dtype = DEFAULT_DTYPE
 
     def __post_init__(self) -> None:
-        """Initialise running moment accumulators."""
         self.sum = torch.zeros(self.dim, dtype=self.dtype, device=self.device)
         self.sum_sq = torch.zeros_like(self.sum)
         self.count = 0
 
     def update(self, values: torch.Tensor) -> None:
-        """Accumulate a batch of values into the running statistics."""
         if values.numel() == 0:
             return
         if values.ndim == 1:
@@ -39,13 +39,11 @@ class Stats:
         self.count += int(values.shape[0])
 
     def mean(self) -> torch.Tensor:
-        """Return the running mean for each dimension."""
         if self.count == 0:
             return torch.zeros_like(self.sum)
         return self.sum / self.count
 
     def std(self) -> torch.Tensor:
-        """Return the running standard deviation for each dimension."""
         if self.count == 0:
             return torch.zeros_like(self.sum)
         mean = self.mean()
@@ -55,7 +53,6 @@ class Stats:
 
 
 def load_split_names(dataset_dir: Path, split_files: Sequence[str]) -> list[str]:
-    """Collect and deduplicate sample names from the provided split files."""
     names: set[str] = set()
     for split_name in split_files:
         split_path = dataset_dir / split_name
@@ -70,7 +67,6 @@ def load_split_names(dataset_dir: Path, split_files: Sequence[str]) -> list[str]
 
 
 def load_char_sequence(dataset_dir: Path, sample: str) -> torch.Tensor:
-    """Load precomputed character centre positions for the given sample."""
     path = dataset_dir / "char" / f"{sample}.npy"
     if not path.exists():
         raise FileNotFoundError(f"Missing character centres: {path}")
@@ -81,7 +77,6 @@ def load_char_sequence(dataset_dir: Path, sample: str) -> torch.Tensor:
 
 
 def load_smpl_root(dataset_dir: Path, sample: str) -> torch.Tensor:
-    """Load the SMPL global orientation tensor for the sample."""
     path = dataset_dir / "smplh" / f"{sample}.pkl"
     if not path.exists():
         raise FileNotFoundError(f"Missing SMPL parameters: {path}")
@@ -94,17 +89,16 @@ def load_smpl_root(dataset_dir: Path, sample: str) -> torch.Tensor:
         tensor = torch.as_tensor(root_pose, dtype=DEFAULT_DTYPE)
     if tensor.ndim == 4 and tensor.shape[1] == 1:
         tensor = tensor[:, 0]
-
+ 
     return tensor
 
 
 def load_camera_trajectory(dataset_dir: Path, sample: str) -> torch.Tensor:
-    """Load camera poses as SE(3) matrices for the sample."""
     txt_path = dataset_dir / "traj" / f"{sample}.txt"
-    if not txt_path.exists():
-        raise FileNotFoundError(f"Missing trajectory file: {txt_path}")
-    trajectory = read_kitti_poses_file(txt_path)
-    matrices = np.asarray(trajectory.poses_se3, dtype=np.float32)
+    if txt_path.exists():
+        trajectory = read_kitti_poses_file(txt_path)
+        matrices = np.asarray(trajectory.poses_se3, dtype=np.float32)
+
     return torch.from_numpy(matrices).to(DEFAULT_DTYPE)
 
 
@@ -114,7 +108,6 @@ def compute_aligned_translations(
     R0_inv: torch.Tensor,
     align_first_frame: bool,
 ) -> torch.Tensor:
-    """Extract camera translations and optionally align them to the first frame."""
     translations = matrices[:, :3, 3].to(DEFAULT_DTYPE)
     if align_first_frame:
         char_first = char_first_pos.to(dtype=DEFAULT_DTYPE, device=translations.device)
@@ -129,7 +122,6 @@ def compute_char_features(
     align_first_frame: bool,
     velocity: bool,
 ) -> torch.Tensor:
-    """Align character positions and optionally switch to velocity features."""
     char_proc = char_raw.to(dtype=DEFAULT_DTYPE)
     char_device = char_proc.device
     if align_first_frame:
@@ -138,44 +130,21 @@ def compute_char_features(
     else:
         char_aligned = char_proc
 
-    if not velocity:
-        return char_aligned
-
-    velocities = compute_differences(char_aligned, True)
-    first_frame = char_raw[0:1].to(dtype=DEFAULT_DTYPE, device=char_device)
-    return torch.cat([first_frame, velocities], dim=0)
+    if velocity:
+        if char_aligned.size(0) <= 1:
+            velocities = torch.zeros((0, 3), dtype=DEFAULT_DTYPE, device=char_device)
+        else:
+            velocities = char_aligned[1:] - char_aligned[:-1]
+        first_frame = char_raw[0:1].to(dtype=DEFAULT_DTYPE, device=char_device)
+        return torch.cat([first_frame, velocities], dim=0)
+    return char_aligned
 
 
 def moments_to_list(tensor: torch.Tensor) -> list[float]:
-    """Convert a tensor of statistics into a plain Python list."""
     return [float(x) for x in tensor.tolist()]
 
 
-def clamp_length(length: int, limit: int | None) -> int:
-    """Return the sequence length capped by an optional limit."""
-    return min(length, limit) if limit is not None else length
-
-
-def compute_differences(sequence: torch.Tensor, use_velocity: bool) -> torch.Tensor:
-    """Return frame-to-frame differences when `use_velocity` is enabled."""
-    if not use_velocity:
-        return sequence
-    if sequence.size(0) <= 1:
-        return torch.zeros((0, sequence.size(1)), dtype=DEFAULT_DTYPE, device=sequence.device)
-    return sequence[1:] - sequence[:-1]
-
-
-def format_float_list(values: Iterable[float]) -> str:
-    """Format floats so tiny magnitudes appear in scientific notation."""
-    formatted = []
-    for value in values:
-        value = float(value)
-        formatted.append(f"{value:.8e}" if abs(value) < 1e-3 else f"{value:.8f}")
-    return f"[{', '.join(formatted)}]"
-
-
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
-    """Parse command-line arguments for statistics extraction."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dataset-dir",
@@ -232,7 +201,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str]) -> int:
-    """Entry point for generating trajectory and character statistics."""
     args = parse_args(argv)
     dataset_dir = args.dataset_dir.resolve()
     align_first_frame = not args.no_align_first_frame
@@ -252,7 +220,7 @@ def main(argv: Sequence[str]) -> int:
     norm_stats = Stats(3)
     char_stats = Stats(3)
 
-    max_frames = args.num_cams if args.num_cams is not None else 0
+    max_frames = 0
     processed = 0
 
     for sample in samples:
@@ -274,27 +242,34 @@ def main(argv: Sequence[str]) -> int:
                 sys.stderr.write(f"[warn] Skipping {sample}: empty sequence\n")
             continue
 
-        trimmed_len = clamp_length(matrices.size(0), args.num_cams)
-        matrices_use = matrices[:trimmed_len]
+        target_frames = args.num_cams if args.num_cams is not None else matrices.size(0)
+        use_len = min(matrices.size(0), target_frames)
+        matrices_use = matrices[:use_len]
 
         if align_first_frame:
             char_first = raw_char[0:1].to(dtype=DEFAULT_DTYPE, device=matrices_use.device)
         else:
             char_first = torch.zeros((1, 3), dtype=DEFAULT_DTYPE, device=matrices_use.device)
-        ## if align-first-frame false, original data will be preserved since char_first is zero tensor and rotation matrix will identity matrix as well
-        
+
         translations = compute_aligned_translations(
             matrices_use, char_first, R0_inv, align_first_frame
         )
-        if args.num_cams is None:
-            max_frames = max(max_frames, matrices.size(0))
+        seq_len = translations.size(0)
+        max_frames = max(max_frames, target_frames)
 
         shift_stats.update(translations[0])
 
-        trajectory_features = compute_differences(translations, velocity)
-        norm_stats.update(trajectory_features)
+        if velocity:
+            if seq_len > 1:
+                diffs = translations[1:] - translations[:-1]
+            else:
+                diffs = torch.zeros((0, 3), dtype=DEFAULT_DTYPE, device=translations.device)
+        else:
+            diffs = translations
+        norm_stats.update(diffs)
 
-        char_len = clamp_length(raw_char.size(0), args.num_cams)
+        char_target = args.num_cams if args.num_cams is not None else raw_char.size(0)
+        char_len = min(raw_char.size(0), char_target)
         if char_len > 0:
             char_used = raw_char[:char_len]
             char_features = compute_char_features(
@@ -311,31 +286,45 @@ def main(argv: Sequence[str]) -> int:
     num_cams = args.num_cams if args.num_cams is not None else max_frames
     num_total_frames = args.num_interframes * (num_cams - 1) + num_cams
 
-    norm_mean = moments_to_list(norm_stats.mean())
-    norm_std = moments_to_list(norm_stats.std())
-    shift_mean = moments_to_list(shift_stats.mean())
-    shift_std = moments_to_list(shift_stats.std())
-    norm_mean_h = moments_to_list(char_stats.mean())
-    norm_std_h = moments_to_list(char_stats.std())
+    output = {
+        "name": args.name,
+        "num_interframes": args.num_interframes,
+        "num_cams": num_cams,
+        "num_total_frames": num_total_frames,
+        "norm_mean": moments_to_list(norm_stats.mean()),
+        "norm_std": moments_to_list(norm_stats.std()),
+        "shift_mean": moments_to_list(shift_stats.mean()),
+        "shift_std": moments_to_list(shift_stats.std()),
+        "norm_mean_h": moments_to_list(char_stats.mean()),
+        "norm_std_h": moments_to_list(char_stats.std()),
+        "velocity": velocity,
+    }
 
-    yaml_lines = [f"name: '{args.name}'"]
-    yaml_lines.append(f"num_interframes: {args.num_interframes}")
-    yaml_lines.append(f"num_cams: {num_cams}")
+    yaml_lines = [f"name: '{output['name']}'"]
+    yaml_lines.append(f"num_interframes: {output['num_interframes']}")
+    yaml_lines.append(f"num_cams: {output['num_cams']}")
     yaml_lines.append(
         "num_total_frames: ${eval:'${dataset.standardization.num_interframes} * "
         "(${dataset.standardization.num_cams} - 1) + ${dataset.standardization.num_cams} '}"
     )
-    yaml_lines.append("")
-    yaml_lines.append(f"norm_mean: {format_float_list(norm_mean)}")
-    yaml_lines.append(f"norm_std: {format_float_list(norm_std)}")
-    yaml_lines.append("")
-    yaml_lines.append(f"shift_mean: {format_float_list(shift_mean)}")
-    yaml_lines.append(f"shift_std: {format_float_list(shift_std)}")
-    yaml_lines.append("")
-    yaml_lines.append(f"norm_mean_h: {format_float_list(norm_mean_h)}")
-    yaml_lines.append(f"norm_std_h: {format_float_list(norm_std_h)}")
-    yaml_lines.append("")
-    yaml_lines.append(f"velocity: {str(velocity).lower()}")
+
+    def fmt_list(values: Iterable[float]) -> str:
+        formatted = []
+        for v in values:
+            val = float(v)
+            if abs(val) < 1e-3:
+                formatted.append(f"{val:.8e}")   # 지수 표기
+            else:
+                formatted.append(f"{val:.8f}")   # 일반 소수
+        return f"[{', '.join(formatted)}]"
+
+    yaml_lines.append(f"\nnorm_mean: {fmt_list(output['norm_mean'])}")
+    yaml_lines.append(f"norm_std: {fmt_list(output['norm_std'])}")
+    yaml_lines.append(f"\nshift_mean: {fmt_list(output['shift_mean'])}")
+    yaml_lines.append(f"shift_std: {fmt_list(output['shift_std'])}")
+    yaml_lines.append(f"\nnorm_mean_h: {fmt_list(output['norm_mean_h'])}")
+    yaml_lines.append(f"norm_std_h: {fmt_list(output['norm_std_h'])}")
+    yaml_lines.append(f"\nvelocity: {str(output['velocity']).lower()}")
 
     result = "\n".join(yaml_lines) + "\n"
 
