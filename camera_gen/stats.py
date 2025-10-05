@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import argparse
@@ -12,6 +11,8 @@ import torch
 from evo.tools.file_interface import read_kitti_poses_file
 
 
+# Utility script that summarizes camera and character trajectories across
+# dataset splits; downstream configs consume these statistics for normalization.
 DEFAULT_DTYPE = torch.float32
 
 
@@ -53,6 +54,7 @@ class Stats:
 
 
 def load_split_names(dataset_dir: Path, split_files: Sequence[str]) -> list[str]:
+    # Split files may overlap; use a set so each sample is counted once.
     names: set[str] = set()
     for split_name in split_files:
         split_path = dataset_dir / split_name
@@ -95,10 +97,11 @@ def load_smpl_root(dataset_dir: Path, sample: str) -> torch.Tensor:
 
 def load_camera_trajectory(dataset_dir: Path, sample: str) -> torch.Tensor:
     txt_path = dataset_dir / "traj" / f"{sample}.txt"
-    if txt_path.exists():
-        trajectory = read_kitti_poses_file(txt_path)
-        matrices = np.asarray(trajectory.poses_se3, dtype=np.float32)
+    if not txt_path.exists():
+        raise FileNotFoundError(f"Missing trajectory file: {txt_path}")
 
+    trajectory = read_kitti_poses_file(txt_path)
+    matrices = np.asarray(trajectory.poses_se3, dtype=np.float32)
     return torch.from_numpy(matrices).to(DEFAULT_DTYPE)
 
 
@@ -108,6 +111,7 @@ def compute_aligned_translations(
     R0_inv: torch.Tensor,
     align_first_frame: bool,
 ) -> torch.Tensor:
+    # Extract translation component of each SE(3) pose and optionally re-center.
     translations = matrices[:, :3, 3].to(DEFAULT_DTYPE)
     if align_first_frame:
         char_first = char_first_pos.to(dtype=DEFAULT_DTYPE, device=translations.device)
@@ -122,6 +126,7 @@ def compute_char_features(
     align_first_frame: bool,
     velocity: bool,
 ) -> torch.Tensor:
+    # Work in the default precision on the same device as the input sequence.
     char_proc = char_raw.to(dtype=DEFAULT_DTYPE)
     char_device = char_proc.device
     if align_first_frame:
@@ -216,6 +221,7 @@ def main(argv: Sequence[str]) -> int:
         sys.stderr.write("[error] No samples found in provided splits\n")
         return 1
 
+    # Track mean/std for first-frame offsets, motion deltas, and character data.
     shift_stats = Stats(3)
     norm_stats = Stats(3)
     char_stats = Stats(3)
@@ -223,6 +229,7 @@ def main(argv: Sequence[str]) -> int:
     max_frames = 0
     processed = 0
 
+    # Iterate over every sample in the requested splits and accumulate stats.
     for sample in samples:
         try:
             raw_char = load_char_sequence(dataset_dir, sample)
@@ -237,11 +244,13 @@ def main(argv: Sequence[str]) -> int:
                 sys.stderr.write(f"[warn] Skipping {sample}: {exc}\n")
             continue
 
+        # Skip samples with missing frames to avoid corrupting statistics.
         if matrices.size(0) == 0 or raw_char.size(0) == 0:
             if not args.quiet:
                 sys.stderr.write(f"[warn] Skipping {sample}: empty sequence\n")
             continue
 
+        # Limit sequence length so statistics align with the configured camera count.
         target_frames = args.num_cams if args.num_cams is not None else matrices.size(0)
         use_len = min(matrices.size(0), target_frames)
         matrices_use = matrices[:use_len]
@@ -257,8 +266,10 @@ def main(argv: Sequence[str]) -> int:
         seq_len = translations.size(0)
         max_frames = max(max_frames, target_frames)
 
+        # Record the initial camera offset to characterize translation bias.
         shift_stats.update(translations[0])
 
+        # Derive motion features; when velocity is enabled use frame-to-frame deltas.
         if velocity:
             if seq_len > 1:
                 diffs = translations[1:] - translations[:-1]
@@ -268,6 +279,7 @@ def main(argv: Sequence[str]) -> int:
             diffs = translations
         norm_stats.update(diffs)
 
+        # Mirror the frame cap for character trajectories to stay length-aligned.
         char_target = args.num_cams if args.num_cams is not None else raw_char.size(0)
         char_len = min(raw_char.size(0), char_target)
         if char_len > 0:
@@ -275,6 +287,7 @@ def main(argv: Sequence[str]) -> int:
             char_features = compute_char_features(
                 char_used, R0_inv, align_first_frame, velocity
             )
+            # Aggregate character trajectory statistics for downstream normalization.
             char_stats.update(char_features)
 
         processed += 1
@@ -286,6 +299,7 @@ def main(argv: Sequence[str]) -> int:
     num_cams = args.num_cams if args.num_cams is not None else max_frames
     num_total_frames = args.num_interframes * (num_cams - 1) + num_cams
 
+    # Compose the statistics payload that downstream YAML configs expect.
     output = {
         "name": args.name,
         "num_interframes": args.num_interframes,
@@ -300,6 +314,7 @@ def main(argv: Sequence[str]) -> int:
         "velocity": velocity,
     }
 
+    # Render YAML snippet so configs can embed the computed statistics directly.
     yaml_lines = [f"name: '{output['name']}'"]
     yaml_lines.append(f"num_interframes: {output['num_interframes']}")
     yaml_lines.append(f"num_cams: {output['num_cams']}")
@@ -313,9 +328,11 @@ def main(argv: Sequence[str]) -> int:
         for v in values:
             val = float(v)
             if abs(val) < 1e-3:
-                formatted.append(f"{val:.8e}")   # 지수 표기
+                # Extremely small magnitudes are clearer in scientific notation.
+                formatted.append(f"{val:.8e}")
             else:
-                formatted.append(f"{val:.8f}")   # 일반 소수
+                # Otherwise keep a fixed number of decimal places.
+                formatted.append(f"{val:.8f}")
         return f"[{', '.join(formatted)}]"
 
     yaml_lines.append(f"\nnorm_mean: {fmt_list(output['norm_mean'])}")
