@@ -16,6 +16,7 @@ import trimesh
 from scipy.spatial.transform import Rotation
 from tqdm import tqdm, trange
 import torch.nn.functional as F
+import math
 
 from pytorch3d.structures import Meshes
 from pytorch3d.io import load_ply
@@ -29,11 +30,16 @@ MeshRenderer,
 MeshRendererWithFragments,
 MeshRasterizer,
 TexturesVertex)
-from pytorch3d.transforms import matrix_to_axis_angle
+from pytorch3d.transforms import matrix_to_axis_angle, axis_angle_to_matrix
 import sys
 sys.path.insert(0, os.path.join('../../../HSI/fitting', 'main'))
 sys.path.insert(0, os.path.join('../../../HSI/fitting', 'common'))
 from utils.smpl_x import smpl_x
+from lang_sam import LangSAM
+import torchvision.transforms as T
+from sklearn.linear_model import RANSACRegressor
+from sklearn.cluster import DBSCAN
+import copy
 
 
 class ScPanel:
@@ -48,13 +54,13 @@ class ScPanel:
         self.tab = tab
         self.renderer = self.viewer.viewer_renderer
 
-        self.up_vector = np.array([0.0, 0.0, 1.0])
+        self.world_up_vector = None
         self.render_wh = (720, 480)
         self.frame_num = 81
         self.render_mode = "rgb"
         self.root_path = self.viewer.root_path
 
-        self.data_type_list = ["static", "traj", "detailed"]
+        self.data_type_list = ['static', 'traj', 'detailed']
         self.current_data_type = self.data_type_list[0]
 
         self.running_mesh = False
@@ -63,9 +69,11 @@ class ScPanel:
         self.pc_xyz = self.viewer.gaussian_model.get_xyz
         self.min_x, self.min_y, self.min_z = self.pc_xyz.min(dim=0).values
         self.max_x, self.max_y, self.max_z = self.pc_xyz.max(dim=0).values
-        
+
+        self.langsam = LangSAM(sam_type="sam2.1_hiera_large")
+        self.to_pil = T.ToPILImage()
+
         self._build_data_dir()
-        self._set_vis_path()
 
         self._setup_root_path()
         self._setup_traj_folder()
@@ -82,7 +90,7 @@ class ScPanel:
         def _(_) -> None:
             self.root_path = root_path_input.value
             self._build_data_dir()
-            self._set_vis_path()
+            self.set_path('static')
 
     def _setup_traj_folder(self):
         with self.server.gui.add_folder("Traj"):
@@ -158,7 +166,7 @@ class ScPanel:
                     R = c2w[:3, :3]
                     t = c2w[:3, 3]
 
-                    pc = depth_to_world_pc(depth_value[:, :, 0], K, R, t, screen_pos[0]) # (N=1, 3)
+                    pc = depth_to_pc(depth_value[:, :, 0], K, R, t, screen_pos[0]) # (N=1, 3)
                     self.start_point.value = pc[0].tolist()
                     print(f"start point: {self.start_point.value}")
                     scene.add_point_cloud(
@@ -198,7 +206,7 @@ class ScPanel:
                     R = c2w[:3, :3]
                     t = c2w[:3, 3]
 
-                    pc = depth_to_world_pc(depth_value[:, :, 0], K, R, t, screen_pos[0]) # (N=1, 3)
+                    pc = depth_to_pc(depth_value[:, :, 0], K, R, t, screen_pos[0]) # (N=1, 3)
                     self.end_point.value = pc[0].tolist()
                     print(f"end point: {self.end_point.value}")
                     scene.add_point_cloud(
@@ -209,17 +217,22 @@ class ScPanel:
                         point_shape='circle'
                     )
 
-            dump_image_with_start_end_button = self.server.gui.add_button(
-                "Dump Image (Start, End Point)",
+            dump_image_for_static = self.server.gui.add_button(
+                "Dump Image (Static)",
                 color="green",
                 icon=viser.Icon.LIVE_PHOTO,
-                hint="Dump the current render image as an image with start point and end point.",
+                hint="Dump the current render image as an image for prior",
             )
-            @dump_image_with_start_end_button.on_click
+            @dump_image_for_static.on_click
             def _(event: viser.GuiEvent) -> None:
                 client = event.client
                 assert client is not None
-                cameras = self.get_cameras_from_client(client, img_wh=self.render_wh)
+
+                # Set data type for setting path
+                self.set_path('static')
+
+                cameras, _, _ = self.optimize_cam_params()
+                self.update_camera(client, cameras[0])
                 render_wh = self.render_wh
 
                 # Render Depth
@@ -228,33 +241,23 @@ class ScPanel:
                 depth_value = depth[:, :, 0:1] # (H, W, 1)
                 depth_map = depth[:, :, 1:].astype(np.uint8) # (H, W, 3)
                 self.server.scene.set_global_visibility(True)
-                
-                depth_path = os.path.join(self.depth_vis_dir_static, '0.png')
+
+                depth_path = os.path.join(self.depth_vis_dir_path, '0.png')
                 imageio.imwrite(depth_path, depth_map)
-                depth_npy_path = os.path.join(self.depth_dir_static, '0.npy')
+                depth_npy_path = os.path.join(self.depth_dir_path, '0.npy')
                 np.save(depth_npy_path, depth_value)
                 print(f"Save depth render in {depth_path}\nRender resolution is {depth_map.shape}")
                 print(f"Save depth in {depth_npy_path}\nDepth resolution is {depth_value.shape}")
                 print(f"Max depth: {depth_value.max()}")
                 print(f"Min depth: {depth_value.min()}")
-                
-                for i in range(self.frame_num):
-                    depth_path = os.path.join(self.depth_vis_dir_traj, f'{i}.png')
-                    imageio.imwrite(depth_path, depth_map)
-                    depth_npy_path = os.path.join(self.depth_dir_traj, f'{i}.npy')
-                    np.save(depth_npy_path, depth_value)
 
                 # Render Image
                 self.server.scene.set_global_visibility(False)
                 image = self.render(cameras, render_mode="rgb")[0]
                 self.server.scene.set_global_visibility(True)
-                image_path = os.path.join(self.scene_render_dir_static, '0.png')
+                image_path = os.path.join(self.scene_render_path, '0.png')
                 imageio.imwrite(image_path, image)
                 print(f"Save image in {image_path}\nRender resolution is {image.shape}")
-
-                for i in range(self.frame_num):
-                    image_path = os.path.join(self.scene_render_dir_traj, f'{i}.png')
-                    imageio.imwrite(image_path, image)
 
                 c2w, K = self.get_cam_params(client, render_wh)
                 R = c2w[:3, :3]
@@ -267,16 +270,16 @@ class ScPanel:
 
                 image_with_start_point = image.copy()
                 cv2.circle(image_with_start_point, (int(start_uv[0]), int(start_uv[1])), 10, (255, 0, 0), -1)
-                image_path = os.path.join(self.static_dir_path, 'start_point.png')
+                image_path = os.path.join(self.data_path, 'start_point.png')
                 imageio.imwrite(image_path, image_with_start_point)
 
                 image_with_end_point = image.copy()
                 cv2.circle(image_with_end_point, (int(end_uv[0]), int(end_uv[1])), 10, (0, 0, 255), -1)
-                image_path = os.path.join(self.static_dir_path, 'end_point.png')
+                image_path = os.path.join(self.data_path, 'end_point.png')
                 imageio.imwrite(image_path, image_with_end_point)
 
                 # Save start/end point
-                points_path = os.path.join(self.static_dir_path, 'points.json')
+                points_path = os.path.join(self.data_path, 'points.json')
                 points = {
                     "start_point": self.start_point.value,
                     "end_point": self.end_point.value
@@ -299,13 +302,129 @@ class ScPanel:
                     "focal": focal,
                     "princpt": princpt
                 }
-                json_path = os.path.join(self.cam_param_path_static, "0.json")
+                json_path = os.path.join(self.cam_param_path, "0.json")
                 with open(json_path, 'w') as f:
                     json.dump(cam_param, f)
                 print(f"Save cam_param in {json_path}")
 
+                print("Finish Dumping!")
+
+            dump_image_with_start_end_button = self.server.gui.add_button(
+                "Dump Image (Start, End Point)",
+                color="green",
+                icon=viser.Icon.LIVE_PHOTO,
+                hint="Dump the current render image as an image with start point and end point.",
+            )
+            @dump_image_with_start_end_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                client = event.client
+                assert client is not None
+
+                # Dump for static dir
+                self.set_path('static')
+
+                cameras = self.get_cameras_from_client(client, img_wh=self.render_wh)
+                self.update_camera(client, cameras[0])
+                render_wh = self.render_wh
+
+                self.server.scene.set_global_visibility(False)
+                depth = self.render(cameras, render_mode="exp_depth")[0]
+                image = self.render(cameras, render_mode="rgb")[0]
+                alpha = self.render(cameras, render_mode="alpha")[0]
+                n_contribs = self.render(cameras, render_mode="n_contribs")[0]
+                self.server.scene.set_global_visibility(True)
+                self.set_rgb_render_mode()
+
+                depth_value = depth[:, :, 0:1] # (H, W, 1)
+                depth_map = depth[:, :, 1:].astype(np.uint8) # (H, W, 3)
+                
+                confidence = np.expand_dims(-np.log(1 - alpha + 1e-6) * n_contribs, axis=-1) # (H, W, 1)
+                confidence = (confidence - confidence.min()) / (confidence.max() - confidence.min())
+                confidence_vis = (confidence * 255).astype(np.uint8)
+                confidence_vis = np.repeat(confidence_vis, 3, axis=-1) # (H, W, 3)
+
+                depth_path = os.path.join(self.depth_vis_dir_path, '0.png')
+                imageio.imwrite(depth_path, depth_map)
+                depth_npy_path = os.path.join(self.depth_dir_path, '0.npy')
+                np.save(depth_npy_path, depth_value)
+                print(f"Save depth render in {self.depth_vis_dir_path}\nRender resolution is {depth_map.shape}")
+                print(f"Save depth in {self.depth_dir_path}\nDepth resolution is {depth_value.shape}")
+                print(f"Max depth: {depth_value.max()}")
+                print(f"Min depth: {depth_value.min()}")
+
+                image_path = os.path.join(self.scene_render_path, '0.png')
+                imageio.imwrite(image_path, image)
+                print(f"Save image in {self.scene_render_path}\nRender resolution is {image.shape}")
+
+                confidence_path = os.path.join(self.scene_confidence_path, f"0.npy")
+                np.save(confidence_path, confidence)
+                confidence_vis_path = os.path.join(self.scene_confidence_vis_path, f"0.png")
+                imageio.imwrite(confidence_vis_path, confidence_vis)
+
+                c2w, K = self.get_cam_params(client, render_wh)
+                R = c2w[:3, :3]
+                t = c2w[:3, 3]
+
+                points = np.array([self.start_point.value, self.end_point.value])
+                uv = project_points_to_image(points, K, R, t)
+                start_uv = uv[0].tolist()
+                end_uv = uv[1].tolist()
+
+                image_with_start_point = image.copy()
+                cv2.circle(image_with_start_point, (int(start_uv[0]), int(start_uv[1])), 10, (255, 0, 0), -1)
+                image_path = os.path.join(self.data_path, 'start_point.png')
+                imageio.imwrite(image_path, image_with_start_point)
+
+                image_with_end_point = image.copy()
+                cv2.circle(image_with_end_point, (int(end_uv[0]), int(end_uv[1])), 10, (0, 0, 255), -1)
+                image_path = os.path.join(self.data_path, 'end_point.png')
+                imageio.imwrite(image_path, image_with_end_point)
+
+                # Save start/end point
+                points_path = os.path.join(self.data_path, 'points.json')
+                points = {
+                    "start_point": self.start_point.value,
+                    "end_point": self.end_point.value
+                }
+                with open(points_path, 'w') as f:
+                    json.dump(points, f)
+                print(f"Save points in {points_path}")
+                print(f"Start point: {points["start_point"]}")
+                print(f"End point: {points["end_point"]}")
+
+                # Save camera parameters
+                R = c2w[:3, :3].T.tolist() # w2c
+                t = (-c2w[:3, :3].T @ c2w[:3, 3]).tolist() # w2c
+                focal = [K[0, 0], K[1, 1]]
+                princpt = [render_wh[0] // 2, render_wh[1] // 2]
+
+                cam_param = {
+                    "R": R,
+                    "t": t,
+                    "focal": focal,
+                    "princpt": princpt
+                }
+                json_path = os.path.join(self.cam_param_path, "0.json")
+                with open(json_path, 'w') as f:
+                    json.dump(cam_param, f)
+                
+                self.set_path('traj')
+
                 for i in range(self.frame_num):
-                    json_path = os.path.join(self.cam_param_path_traj, f"{i}.json")
+                    depth_path = os.path.join(self.depth_vis_dir_path, f'{i}.png')
+                    imageio.imwrite(depth_path, depth_map)
+                    depth_npy_path = os.path.join(self.depth_dir_path, f'{i}.npy')
+                    np.save(depth_npy_path, depth_value)
+
+                    image_path = os.path.join(self.scene_render_path, f'{i}.png')
+                    imageio.imwrite(image_path, image)
+
+                    confidence_path = os.path.join(self.scene_confidence_path, f"{i}.npy")
+                    np.save(confidence_path, confidence)
+                    confidence_vis_path = os.path.join(self.scene_confidence_vis_path, f"{i}.png")
+                    imageio.imwrite(confidence_vis_path, confidence_vis)
+
+                    json_path = os.path.join(self.cam_param_path, f"{i}.json")
                     with open(json_path, 'w') as f:
                         json.dump(cam_param, f)
                 
@@ -322,69 +441,85 @@ class ScPanel:
                 client = event.client
                 assert client is not None
 
-                cameras, render, masks = self.compute_cam_param()
+                smplx_scale, smplx_up_vector = self.get_priors()
+
+                # Dump for traj dir
+                self.set_path('traj')
+
+                cameras, render, bbox_mask = self.optimize_cam_params(smplx_scale, smplx_up_vector)
                 self.update_camera(client, cameras[0])
                 start_image = render[0].detach().cpu().numpy().copy().astype(np.uint8)
                 end_image = render[0].detach().cpu().numpy().copy().astype(np.uint8)
 
-                bbox_mask = mask_to_bbox_mask(masks).repeat(1, 1, 1, 3).detach().cpu().numpy().astype(np.uint8)
+                bbox_mask = bbox_mask.squeeze(dim=-1).repeat(1, 1, 1, 3).detach().cpu().numpy().astype(np.uint8) * 255 # (N, H, W)
+                print(bbox_mask.shape)
 
                 start_image[bbox_mask[0] > 0] = 127
                 end_image[bbox_mask[1] > 0] = 127
 
+                H, W, _ = start_image.shape
+                ratio = 0.01
+                bb = [int(W * ratio), int(H * ratio), W - int(W * ratio), H - int(H * ratio)]
+                mask_intersection = ((start_image == 127) & (end_image == 127)).all(axis=-1, keepdims=True) 
+
                 human_masked_video = []
                 human_masked_video.append(start_image)
                 for i in range(self.frame_num - 2):
-                    human_masked_video.append(np.ones_like(start_image).astype(np.uint8) * 127)
+                    center_frame = start_image.copy()
+                    center_frame[bb[1]:bb[3], bb[0]:bb[2], :] = 127
+                    center_frame = np.where(mask_intersection, 127, center_frame)
+                    human_masked_video.append(center_frame)
                 human_masked_video.append(end_image)
-                imageio.mimsave(os.path.join(self.traj_dir_path, 'human_masked_video.mp4'), human_masked_video)
+                imageio.mimsave(os.path.join(self.data_path, 'human_masked_video.mp4'), human_masked_video, fps=16)
 
                 masked_video = []
                 masked_video.append(bbox_mask[0])
                 for i in range(self.frame_num - 2):
-                    masked_video.append(np.ones_like(bbox_mask[0]).astype(np.uint8))
+                    center_mask = bbox_mask[0].copy()
+                    center_mask[bb[1]:bb[3], bb[0]:bb[2], :] = 255
+                    center_mask = np.where(mask_intersection, 255, center_mask)
+                    masked_video.append(center_mask)
                 masked_video.append(bbox_mask[1])
-                imageio.mimsave(os.path.join(self.traj_dir_path, 'masked_video.mp4'), masked_video)
+                imageio.mimsave(os.path.join(self.data_path, 'masked_video.mp4'), masked_video, fps=16)
 
                 print("Optimization is finished.")
+                print("Start dumping")
 
-                """
-                cameras = self.get_cameras_from_client(client, img_wh=self.render_wh)
                 render_wh = self.render_wh
 
-                # Render Depth
                 self.server.scene.set_global_visibility(False)
                 depth = self.render(cameras, render_mode="exp_depth")[0]
+                image = self.render(cameras, render_mode="rgb")[0]
+                alpha = self.render(cameras, render_mode="alpha")[0]
+                n_contribs = self.render(cameras, render_mode="n_contribs")[0]
+                self.server.scene.set_global_visibility(True)
+                self.set_rgb_render_mode()
+
                 depth_value = depth[:, :, 0:1] # (H, W, 1)
                 depth_map = depth[:, :, 1:].astype(np.uint8) # (H, W, 3)
-                self.server.scene.set_global_visibility(True)
                 
-                depth_path = os.path.join(self.depth_vis_dir_static, '0.png')
+                confidence = np.expand_dims(-np.log(1 - alpha + 1e-6) * n_contribs, axis=-1) # (H, W, 1)
+                confidence = (confidence - confidence.min()) / (confidence.max() - confidence.min())
+                confidence_vis = (confidence * 255).astype(np.uint8)
+                confidence_vis = np.repeat(confidence_vis, 3, axis=-1) # (H, W, 3)
+
+                depth_path = os.path.join(self.depth_vis_dir_path, '0.png')
                 imageio.imwrite(depth_path, depth_map)
-                depth_npy_path = os.path.join(self.depth_dir_static, '0.npy')
+                depth_npy_path = os.path.join(self.depth_dir_path, '0.npy')
                 np.save(depth_npy_path, depth_value)
-                print(f"Save depth render in {depth_path}\nRender resolution is {depth_map.shape}")
-                print(f"Save depth in {depth_npy_path}\nDepth resolution is {depth_value.shape}")
+                print(f"Save depth render in {self.depth_vis_dir_path}\nRender resolution is {depth_map.shape}")
+                print(f"Save depth in {self.depth_dir_path}\nDepth resolution is {depth_value.shape}")
                 print(f"Max depth: {depth_value.max()}")
                 print(f"Min depth: {depth_value.min()}")
-                
-                for i in range(self.frame_num):
-                    depth_path = os.path.join(self.depth_vis_dir_traj, f'{i}.png')
-                    imageio.imwrite(depth_path, depth_map)
-                    depth_npy_path = os.path.join(self.depth_dir_traj, f'{i}.npy')
-                    np.save(depth_npy_path, depth_value)
 
-                # Render Image
-                self.server.scene.set_global_visibility(False)
-                image = self.render(cameras, render_mode="rgb")[0]
-                self.server.scene.set_global_visibility(True)
-                image_path = os.path.join(self.scene_render_dir_static, '0.png')
+                image_path = os.path.join(self.scene_render_path, '0.png')
                 imageio.imwrite(image_path, image)
-                print(f"Save image in {image_path}\nRender resolution is {image.shape}")
+                print(f"Save image in {self.scene_render_path}\nRender resolution is {image.shape}")
 
-                for i in range(self.frame_num):
-                    image_path = os.path.join(self.scene_render_dir_traj, f'{i}.png')
-                    imageio.imwrite(image_path, image)
+                confidence_path = os.path.join(self.scene_confidence_path, f"0.npy")
+                np.save(confidence_path, confidence)
+                confidence_vis_path = os.path.join(self.scene_confidence_vis_path, f"0.png")
+                imageio.imwrite(confidence_vis_path, confidence_vis)
 
                 c2w, K = self.get_cam_params(client, render_wh)
                 R = c2w[:3, :3]
@@ -397,16 +532,16 @@ class ScPanel:
 
                 image_with_start_point = image.copy()
                 cv2.circle(image_with_start_point, (int(start_uv[0]), int(start_uv[1])), 10, (255, 0, 0), -1)
-                image_path = os.path.join(self.static_dir_path, 'start_point.png')
+                image_path = os.path.join(self.data_path, 'start_point.png')
                 imageio.imwrite(image_path, image_with_start_point)
 
                 image_with_end_point = image.copy()
                 cv2.circle(image_with_end_point, (int(end_uv[0]), int(end_uv[1])), 10, (0, 0, 255), -1)
-                image_path = os.path.join(self.static_dir_path, 'end_point.png')
+                image_path = os.path.join(self.data_path, 'end_point.png')
                 imageio.imwrite(image_path, image_with_end_point)
 
                 # Save start/end point
-                points_path = os.path.join(self.static_dir_path, 'points.json')
+                points_path = os.path.join(self.data_path, 'points.json')
                 points = {
                     "start_point": self.start_point.value,
                     "end_point": self.end_point.value
@@ -429,20 +564,32 @@ class ScPanel:
                     "focal": focal,
                     "princpt": princpt
                 }
-                json_path = os.path.join(self.cam_param_path_static, "0.json")
+                json_path = os.path.join(self.cam_param_path, "0.json")
                 with open(json_path, 'w') as f:
                     json.dump(cam_param, f)
-                print(f"Save cam_param in {json_path}")
+                
+                self.set_path('traj')
 
                 for i in range(self.frame_num):
-                    json_path = os.path.join(self.cam_param_path_traj, f"{i}.json")
+                    depth_path = os.path.join(self.depth_vis_dir_path, f'{i}.png')
+                    imageio.imwrite(depth_path, depth_map)
+                    depth_npy_path = os.path.join(self.depth_dir_path, f'{i}.npy')
+                    np.save(depth_npy_path, depth_value)
+
+                    image_path = os.path.join(self.scene_render_path, f'{i}.png')
+                    imageio.imwrite(image_path, image)
+
+                    confidence_path = os.path.join(self.scene_confidence_path, f"{i}.npy")
+                    np.save(confidence_path, confidence)
+                    confidence_vis_path = os.path.join(self.scene_confidence_vis_path, f"{i}.png")
+                    imageio.imwrite(confidence_vis_path, confidence_vis)
+
+                    json_path = os.path.join(self.cam_param_path, f"{i}.json")
                     with open(json_path, 'w') as f:
                         json.dump(cam_param, f)
                 
                 print("Finish Dumping!")
-                """
-            
-    
+
     def _setup_refine_folder(self):
         with self.server.gui.add_folder("Refine"):
             load_cam_params_button = self.server.gui.add_button(
@@ -457,7 +604,8 @@ class ScPanel:
                 client = event.client
                 assert client is not None
 
-                cam_param_dir_path = self.cam_param_path_detailed
+                self.set_path('detailed')
+                cam_param_dir_path = self.cam_param_path
                 cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
                 cameras = self.get_cameras_from_json(cam_params_path)
 
@@ -467,10 +615,10 @@ class ScPanel:
                 self.server.scene.set_global_visibility(True)
 
                 for i in range(self.frame_num):
-                    image_path = os.path.join(self.scene_render_dir_detailed, f"{i}.png")
+                    image_path = os.path.join(self.scene_render_path, f"{i}.png")
                     imageio.imwrite(image_path, image[i])
 
-                render_video_path = os.path.join(self.detailed_dir_path, 'scene_render_video.mp4')
+                render_video_path = os.path.join(self.data_path, 'scene_render_video.mp4')
                 imageio.mimsave(render_video_path, image, fps=16)
                 print(f"Video saved in {render_video_path}")
 
@@ -488,13 +636,16 @@ class ScPanel:
                 client = event.client
                 assert client is not None
 
-                cam_param_dir_path = self.cam_param_path_detailed
+                self.set_path('detailed')
+                cam_param_dir_path = self.cam_param_path
                 cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
                 cameras = self.get_cameras_from_json(cam_params_path)
                 c2w = torch.linalg.inv(cameras.world_to_camera.transpose(-1, -2)).detach().cpu().numpy()
                 focal = torch.stack([cameras.fx, cameras.fy], dim=1).detach().cpu().numpy()
                 princpt = torch.stack([cameras.cx, cameras.cy], dim=1).detach().cpu().numpy()
-                mesh_dir_path = os.path.join(self.traj_dir_path, "smplx_optimized", "meshes_smoothed")
+
+                self.set_path('traj')
+                mesh_dir_path = os.path.join(self.data_path, "smplx_optimized", "meshes_smoothed")
                 mesh_path_list = [os.path.join(mesh_dir_path, f'{i}.ply') for i in range(len(os.listdir(mesh_dir_path)))]
                 mesh_list = [trimesh.load_mesh(mesh_path).apply_transform(c2w[i]) for i, mesh_path in enumerate(mesh_path_list)]
 
@@ -514,24 +665,26 @@ class ScPanel:
                     image = client.camera.get_render(height=int(princpt[i][1] * 2), width=int(princpt[i][0] * 2))
                     images.append(image)
 
-                render_video_path = os.path.join(self.detailed_dir_path, 'scene_render_video_with_traj_SMPL.mp4')
+                self.set_path('detailed')
+                render_video_path = os.path.join(self.data_path, 'scene_render_video_with_traj_SMPL.mp4')
                 imageio.mimsave(render_video_path, images, fps=16)
                 print(f"Video saved in {render_video_path}")
 
                 self.update_camera(client, cameras[0])
 
-            dump_depth_video_button = self.server.gui.add_button(
-                "Dump Depth Video",
+            dump_button = self.server.gui.add_button(
+                "Dump",
                 color="black",
                 icon=viser.Icon.PLAYER_PLAY,
-                hint="Dump the trajectory as a depth video.",
+                hint="Dump.",
             )
-            @dump_depth_video_button.on_click
+            @dump_button.on_click
             def _(event: viser.GuiEvent) -> None:
                 client = event.client
                 assert client is not None
 
-                cam_param_dir_path = self.cam_param_path_detailed
+                self.set_path('detailed')
+                cam_param_dir_path = self.cam_param_path
                 cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
                 cameras = self.get_cameras_from_json(cam_params_path)
 
@@ -540,17 +693,31 @@ class ScPanel:
                 depth = self.render(cameras, render_mode="exp_depth")
                 depth_value = depth[:, :, :, 0:1] # (N, H, W, 1)
                 depth_map = depth[:, :, :, 1:].astype(np.uint8) # (N, H, W, 3)
+                alpha = self.render(cameras, render_mode="alpha") # (N, H, W, 1)
+                n_contribs = self.render(cameras, render_mode="n_contribs") # (N, H, W, !)
                 self.server.scene.set_global_visibility(True)
+
+                confidence = np.expand_dims(-np.log(1 - alpha + 1e-6) * n_contribs, axis=-1) # (N, H, W, 1)
+                confidence = (confidence - confidence.min()) / (confidence.max() - confidence.min())
+                confidence_vis = (confidence * 255).astype(np.uint8)
+                confidence_vis = np.repeat(confidence_vis, 3, axis=-1) # (N, H, W, 3)
 
                 self.set_rgb_render_mode()
                 self.update_camera(client, cameras[0])
                 
                 for i in range(depth.shape[0]):
-                    depth_path = os.path.join(self.depth_vis_dir_detailed, f'{i}.png')
+                    depth_path = os.path.join(self.depth_vis_dir_path, f'{i}.png')
                     imageio.imwrite(depth_path, depth_map[i])
-                    depth_npy_path = os.path.join(self.depth_dir_detailed, f'{i}.npy')
+                    depth_npy_path = os.path.join(self.depth_dir_path, f'{i}.npy')
                     np.save(depth_npy_path, depth_value[i])
-                print("Depths are saved...")
+                
+                for i in range(confidence.shape[0]):
+                    confidence_path = os.path.join(self.scene_confidence_path, f'{i}.png')
+                    np.save(confidence_path, confidence[i])
+                    confidence_vis_path = os.path.join(self.scene_confidence_vis_path, f'{i}.png')
+                    imageio.imwrite(confidence_vis_path, confidence_vis[i])
+                
+                print("Finish Dumping!")
 
     def _setup_vis_folder(self):
         with self.server.gui.add_folder("Visualization"):
@@ -579,7 +746,7 @@ class ScPanel:
                 client = event.client
                 assert client is not None
                 self.current_data_type = data_type_dropdown.value
-                self._set_vis_path()
+                self.set_path(self.current_data_type)
 
             vis_traj_button = self.server.gui.add_button(
                 "Visualize Trajectory",
@@ -592,14 +759,15 @@ class ScPanel:
                 client = event.client
                 assert client is not None
 
-                cam_param_dir_path = self.cam_param_path_vis
+                self.set_path(self.current_data_type)
+                cam_param_dir_path = self.cam_param_path
                 cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
                 cameras = self.get_cameras_from_json(cam_params_path)
                 c2w = torch.linalg.inv(cameras.world_to_camera.transpose(-1, -2)).detach().cpu().numpy()
                 focal = torch.stack([cameras.fx, cameras.fy], dim=1).detach().cpu().numpy()
                 princpt = torch.stack([cameras.cx, cameras.cy], dim=1).detach().cpu().numpy()
 
-                traj_path_list = [os.path.join(self.char_traj_dir_path_vis, f'{i}.json') for i in range(len(os.listdir(self.char_traj_dir_path_vis)))]
+                traj_path_list = [os.path.join(self.char_traj_dir_path, f'{i}.json') for i in range(len(os.listdir(self.char_traj_dir_path)))]
 
                 traj_list = []
                 for traj_path in traj_path_list:
@@ -637,15 +805,16 @@ class ScPanel:
             def _(event: viser.GuiEvent) -> None: 
                 client = event.client
                 assert client is not None
-                
-                cam_param_dir_path = self.cam_param_path_vis
+
+                self.set_path(self.current_data_type)
+                cam_param_dir_path = self.cam_param_path
                 cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
                 cameras = self.get_cameras_from_json(cam_params_path)
                 c2w = torch.linalg.inv(cameras.world_to_camera.transpose(-1, -2)).detach().cpu().numpy()
                 focal = torch.stack([cameras.fx, cameras.fy], dim=1).detach().cpu().numpy()
                 princpt = torch.stack([cameras.cx, cameras.cy], dim=1).detach().cpu().numpy()
 
-                mesh_path_list = [os.path.join(self.mesh_dir_path_vis, f'{i}.ply') for i in range(len(os.listdir(self.mesh_dir_path_vis)))]
+                mesh_path_list = [os.path.join(self.mesh_dir_path, f'{i}.ply') for i in range(len(os.listdir(self.mesh_dir_path)))]
                 mesh_list = [trimesh.load_mesh(mesh_path).apply_transform(c2w[i]) for i, mesh_path in enumerate(mesh_path_list)]
 
                 self.update_camera(client, cameras[0])
@@ -711,7 +880,8 @@ class ScPanel:
                 client = event.client
                 assert client is not None
 
-                cam_param_dir_path = self.cam_param_path_vis
+                self.set_path(self.current_data_type)
+                cam_param_dir_path = self.cam_param_path
                 cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
                 cameras = self.get_cameras_from_json(cam_params_path)
                 c2w = torch.linalg.inv(cameras.world_to_camera.transpose(-1, -2)).detach().cpu().numpy()
@@ -722,7 +892,7 @@ class ScPanel:
 
                 scene_render_path = self.scene_render_path
                 video_frame_path = self.video_frame_path
-                scene_depth_path = self.scene_depth_path
+                scene_depth_path = self.depth_dir_path
                 optimized_depth_path = self.optimized_depth_path
 
                 N = len(cam_params_path)
@@ -749,10 +919,10 @@ class ScPanel:
                     ])
                     if self.show_optimized_depth_checkbox.value:
                         pc_rgb = video_frames[i].reshape(-1, 3)
-                        pc_world = depth_to_world_pc(optimized_depths[i], K, c2w_R, c2w_t)
+                        pc_world = depth_to_pc(optimized_depths[i], K, c2w_R, c2w_t)
                     else:
                         pc_rgb = scene_renders[i].reshape(-1, 3)
-                        pc_world = depth_to_world_pc(scene_depths[i], K, c2w_R, c2w_t)
+                        pc_world = depth_to_pc(scene_depths[i], K, c2w_R, c2w_t)
                     
                     client.scene.add_point_cloud(
                         name=f"pc_world_{i}",
@@ -760,6 +930,173 @@ class ScPanel:
                         colors=pc_rgb,
                         point_size=0.001
                     )
+            dump_n_contrib_button = self.server.gui.add_button(
+                "Dump N_Contrib",
+                color="blue",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="Visualize confidence.",
+            )
+            @dump_n_contrib_button.on_click
+            def _(event: viser.GuiEvent) -> None: 
+                client = event.client
+                assert client is not None
+
+                # Dump for static dir
+                self.set_path('static')
+
+                cameras = self.get_cameras_from_client(client, img_wh=self.render_wh)
+                self.update_camera(client, cameras[0])
+
+                # Render Depth
+                self.server.scene.set_global_visibility(False)
+                alpha = self.render(cameras, render_mode="alpha")
+                n_contribs = self.render(cameras, render_mode="n_contribs")
+                self.server.scene.set_global_visibility(True)
+                
+                confidence = -np.log(1 - alpha + 1e-6) * n_contribs
+                confidence = (confidence - confidence.min()) / (confidence.max() - confidence.min())
+                confidence_vis = np.expand_dims(confidence * 255, axis=-1).astype(np.uint8)
+                confidence_vis = np.repeat(confidence_vis, 3, axis=-1)
+
+                for i in range(confidence.shape[0]):
+                    confidence_path = os.path.join(self.scene_confidence_path, f"{i}.npy")
+                    np.save(confidence_path, confidence[i])
+                    confidence_vis_path = os.path.join(self.scene_confidence_vis_path, f"{i}.png")
+                    imageio.imwrite(confidence_vis_path, confidence_vis[i])
+                
+                self.set_rgb_render_mode()
+
+            dump_hog_button = self.server.gui.add_button(
+                "Dump hog",
+                color="blue",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="Dump hog",
+            )
+            @dump_hog_button.on_click
+            def _(event: viser.GuiEvent) -> None: 
+                client = event.client
+                assert client is not None
+
+                # Dump for static dir
+                self.set_path('static')
+                segment_result_dir = os.path.join(self.data_path, 'ground_floor_segment')
+                os.makedirs(segment_result_dir, exist_ok=True)
+
+                cameras = self.get_cameras_from_client(client, img_wh=self.render_wh)
+
+                cameras, _, _ = self.optimize_cam_params() # w2c
+
+                cam_pos = (-cameras.R[0] @ cameras.T[0]).detach().cpu().numpy()
+                
+                start_point = np.array(self.start_point.value)
+                end_point = np.array(self.end_point.value)
+                center_point = (start_point - end_point) / 2
+                r_dist = np.linalg.norm(cam_pos - center_point)
+                cam_params = get_cam_params_on_arc(start_point, end_point, r_dist=r_dist, bin=36) # (N, 4, 4), c2w
+
+                bin = 12
+                text_prompt = "floor. ground."
+                center_point = (np.array(self.start_point.value) + np.array(self.end_point.value)) / 2
+                normal_vectors = []
+                for cam_idx, cam_param in enumerate(cam_params):
+
+                    # Debugging
+                    """
+                    cameras.R[0] = torch.tensor(cam_param[:3, :3].T)
+                    cameras.T[0] = torch.tensor(-cam_param[:3, :3].T @ cam_param[:3, 3])
+                    cameras.__post_init__()
+                    self.update_camera(client, cameras[0])
+                    input()
+                    """
+
+                    c2ws_roll = get_cam_params_by_rolling(cam_param, bin)
+
+                    images = []
+                    depths = []
+                    Ks = []
+                    c2ws = []
+
+                    for i, c2w_roll in enumerate(c2ws_roll):
+                        
+                        cameras.R[0] = torch.tensor(c2w_roll[:3, :3].T)
+                        cameras.T[0] = torch.tensor(-c2w_roll[:3, :3].T @ c2w_roll[:3, 3])
+                        cameras.__post_init__()
+                        self.update_camera(client, cameras[0])
+                        c2w, K = self.get_cam_params(client, self.render_wh)
+                        self.server.scene.set_global_visibility(False)
+                        depth = self.render(cameras, render_mode="exp_depth")[0, :, :, 0]
+                        image = self.render(cameras, render_mode="rgb")[0]
+                        self.server.scene.set_global_visibility(True)
+
+                        uv = project_points_to_image(np.stack([start_point, end_point], axis=0), K, c2w[:3, :3], c2w[:3, 3], include_depth=True)
+
+                        if check_pc_visibility(uv, self.render_wh[0], self.render_wh[1], depth) is False:
+                            continue
+
+                        c2ws.append(c2w)
+                        Ks.append(K)
+                        depths.append(depth)
+                        images.append(image)
+
+                    if len(images) == 0:
+                        continue
+
+                    pil_images = [self.to_pil(image) for image in images]
+                    results = self.langsam.predict(pil_images, [text_prompt] * len(pil_images))
+                    masks = []
+                    for result in results:
+                        mask = np.zeros((self.render_wh[1], self.render_wh[0]))[:, :, None]
+                        for pred in result['masks']:
+                            mask = np.logical_or(mask, pred[:, :, None])
+                        masks.append(mask)
+                    masks = np.array(masks)
+                    pcs = [depth_to_pc(depth, K, c2w[:3, :3], c2w[:3, 3]) for depth, c2w, K in zip(depths, c2ws, Ks)]
+                    pcs_image = np.array([pc.reshape(self.render_wh[1], self.render_wh[0], 3) for pc in pcs]) # (N, H, W, 3)
+
+                    for i in range(len(images)):
+                        image = images[i]
+                        mask = masks[i].repeat(3, axis=-1)
+                        image[mask > 0.5] = 127
+                        imageio.imwrite(os.path.join(segment_result_dir, f'{cam_idx}_{360 // bin * i}.png'), image)
+                    
+                    normals_per_frame = extract_ground_normals(pcs_image, masks, ref_point=center_point, max_planes=3)
+                    
+                    normals = [normal for normal in normals_per_frame if len(normal) > 0]
+                    normals = np.concatenate(normals, axis=0) # (M, 3)
+                    normal_vectors.append(normals)
+                    
+                normal_vectors = np.concatenate(normal_vectors, axis=0) # (K, 3)
+                X = normal_vectors
+                dominant_vector, labels, counts = spherical_kmeans(X, K=10, n_iter=5000) # (3,)
+
+                self.world_up_vector = dominant_vector
+                print(normal_vectors.shape)
+                print(dominant_vector)
+                print(counts)
+
+                # visualization
+                color_map = generate_cluster_colors(10)
+                client.scene.add_point_cloud(
+                    name=f'origin',
+                    points=np.zeros((1, 3)),
+                    colors=(0.0, 0.0, 0.0),
+                    point_size=0.01,
+                    point_shape='circle'
+                )
+                client.scene.add_point_cloud(
+                    name=f'norm_clusters',
+                    points=normal_vectors,
+                    colors=np.array([color_map[l] for l in labels]),
+                    point_size=0.01,
+                    point_shape='circle'
+                )
+                client.scene.add_point_cloud(
+                    name=f'dominant',
+                    points=dominant_vector[None],
+                    colors=color_map[np.argmax(counts)][None],
+                    point_size=0.05,
+                    point_shape='circle'
+                )
 
     def _build_data_dir(self):
         root_path = self.root_path
@@ -767,52 +1104,43 @@ class ScPanel:
             print("Root Path does not exist.")
             return
         
-        self.static_dir_path = os.path.join(root_path, 'static')
-        self.traj_dir_path = os.path.join(root_path, 'traj')
-        self.detailed_dir_path = os.path.join(root_path, 'detailed')
+        for data_type in self.data_type_list:
+            self.data_path = os.path.join(root_path, data_type)
+            self.scene_render_path = os.path.join(self.data_path, 'scene_renders')
+            self.depth_dir_path = os.path.join(self.data_path, 'depths_scene')
+            self.depth_vis_dir_path = os.path.join(self.data_path, 'depths_scene_vis')
+            self.cam_param_path = os.path.join(self.data_path, 'cam_params_scene')
+            self.scene_confidence_path = os.path.join(self.data_path, 'scene_confidence')
+            self.scene_confidence_vis_path = os.path.join(self.data_path, 'scene_confidence_vis')
 
-        self.scene_render_dir_static = os.path.join(self.static_dir_path, "scene_renders")
-        self.scene_render_dir_traj = os.path.join(self.traj_dir_path, "scene_renders")
-        self.scene_render_dir_detailed = os.path.join(self.detailed_dir_path, "scene_renders")
+            os.makedirs(self.data_path, exist_ok=True)
+            os.makedirs(self.scene_render_path, exist_ok=True)
+            os.makedirs(self.depth_dir_path, exist_ok=True)
+            os.makedirs(self.depth_vis_dir_path, exist_ok=True)
+            os.makedirs(self.cam_param_path, exist_ok=True)
+            os.makedirs(self.scene_confidence_path, exist_ok=True)
+            os.makedirs(self.scene_confidence_vis_path, exist_ok=True)
 
-        self.depth_dir_static = os.path.join(self.static_dir_path, "depths_scene")
-        self.depth_vis_dir_static = os.path.join(self.static_dir_path, "depths_scene_vis")
-        self.depth_dir_traj = os.path.join(self.traj_dir_path, "depths_scene")
-        self.depth_vis_dir_traj = os.path.join(self.traj_dir_path, "depths_scene_vis")
-        self.depth_dir_detailed = os.path.join(self.detailed_dir_path, "depths_scene")
-        self.depth_vis_dir_detailed = os.path.join(self.detailed_dir_path, "depths_scene_vis")
+    def set_path(self, data_type):
+        if data_type not in self.data_type_list:
+            print("Unsupported data type!")
+            return
 
-        self.cam_param_path_static = os.path.join(self.static_dir_path, 'cam_params_scene')
-        self.cam_param_path_traj = os.path.join(self.traj_dir_path, 'cam_params_scene')
-        self.cam_param_path_detailed = os.path.join(self.detailed_dir_path, 'cam_params_scene')
-
-        os.makedirs(self.static_dir_path, exist_ok=True)
-        os.makedirs(self.traj_dir_path, exist_ok=True)
-        os.makedirs(self.detailed_dir_path, exist_ok=True)
-
-        os.makedirs(self.scene_render_dir_static, exist_ok=True)
-        os.makedirs(self.scene_render_dir_traj, exist_ok=True)
-        os.makedirs(self.scene_render_dir_detailed, exist_ok=True)
-
-        os.makedirs(self.depth_dir_static, exist_ok=True)
-        os.makedirs(self.depth_vis_dir_static, exist_ok=True)
-        os.makedirs(self.depth_dir_traj, exist_ok=True)
-        os.makedirs(self.depth_vis_dir_traj, exist_ok=True)
-        os.makedirs(self.depth_dir_detailed, exist_ok=True)
-        os.makedirs(self.depth_vis_dir_detailed, exist_ok=True)
-        
-        os.makedirs(self.cam_param_path_static, exist_ok=True)
-        os.makedirs(self.cam_param_path_traj, exist_ok=True)
-        os.makedirs(self.cam_param_path_detailed, exist_ok=True)
-
-    def _set_vis_path(self):
-        self.cam_param_path_vis = os.path.join(self.root_path, self.current_data_type, 'cam_params_scene')
-        self.mesh_dir_path_vis = os.path.join(self.root_path, self.current_data_type, "smplx_optimized", "meshes_smoothed")
-        self.char_traj_dir_path_vis = os.path.join(self.root_path, self.current_data_type, "smplx_optimized", "traj_smoothed")
-        self.scene_depth_path = os.path.join(self.root_path, self.current_data_type, 'depths_scene')
-        self.optimized_depth_path = os.path.join(self.root_path, self.current_data_type, 'depths_vggt_optimized')
-        self.scene_render_path = os.path.join(self.root_path, self.current_data_type, 'scene_renders')
-        self.video_frame_path = os.path.join(self.root_path, self.current_data_type, 'frames')
+        self.current_data_type = data_type
+        self.data_path = os.path.join(self.root_path, data_type)
+        self.scene_render_path = os.path.join(self.data_path, 'scene_renders')
+        self.depth_dir_path = os.path.join(self.data_path, 'depths_scene')
+        self.depth_vis_dir_path = os.path.join(self.data_path, 'depths_scene_vis')
+        self.cam_param_path = os.path.join(self.data_path, 'cam_params_scene')
+        self.scene_confidence_path = os.path.join(self.data_path, 'scene_confidence')
+        self.scene_confidence_vis_path = os.path.join(self.data_path, 'scene_confidence_vis')
+        self.mesh_dir_path = os.path.join(self.data_path, "smplx_optimized", "meshes_smoothed")
+        self.char_traj_dir_path = os.path.join(self.data_path, "smplx_optimized", "traj_smoothed")
+        self.optimized_depth_path = os.path.join(self.data_path, 'depths_vggt_optimized')
+        self.video_frame_path = os.path.join(self.data_path, 'frames')
+        self.smplx_scale_path = os.path.join(self.data_path, "smplx_optimized", "scale.json")
+        self.smplx_shape_path = os.path.join(self.data_path, 'smplx_optimized', "shape_param.json")
+        self.smplx_params_path = os.path.join(self.data_path, "smplx_optimized", "smplx_params_smoothed")
     
     def get_current_camera(self, client: viser.ClientHandle):
         camera = client.camera
@@ -942,9 +1270,9 @@ class ScPanel:
         output_type_info = available_outputs.get(render_mode, None)
         if output_type_info is None:
             return
-        if render_mode == "exp_depth":
+        if render_mode == "exp_depth" or "n_contribs" or "alpha":
             output_type_info.visualizer = self.renderer.no_processing
-
+        
         self.renderer._set_output_type(render_mode, output_type_info)
         renders = []
         for camera in cameras:
@@ -967,6 +1295,11 @@ class ScPanel:
                     depth_map = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
                     depth_map = cv2.applyColorMap((depth_map.clip(0.0, 1.0) * 255).astype(np.uint8), cv2.COLORMAP_JET)
                     render = np.concatenate([depth[:, :, 0:1], depth_map], axis=-1) # (H, W, 4)
+            elif render_mode == "n_contribs" or render_mode == "alpha":
+                if optimizable:
+                    render = self.renderer.get_outputs(camera.to_device("cuda"))[0, :, :] # (H, W)
+                else:
+                    render = self.renderer.get_outputs(camera.to_device("cuda"))[0, :, :].detach().cpu().numpy()  # (H, W)
             renders.append(render)
         if optimizable is False:
             renders = np.array(renders)
@@ -974,7 +1307,22 @@ class ScPanel:
             renders = torch.stack(renders)
         return renders
 
-    def compute_cam_param(self, device="cuda:0"):
+    def optimize_cam_params(self, smplx_scale=None, smplx_up_vector=None, device="cuda:0"):
+        data_type = self.current_data_type
+
+        cameras = None
+        img = None
+        bbox_masks = None
+
+        maximum_mask_ratio = 0.3
+        minimum_mask_ratio = 0.05
+        camera_human_elevation_degree = 60.0
+
+        pixel_margin = 50.0
+
+        if smplx_up_vector is not None:
+            smplx_up_vector = smplx_up_vector.to(device)
+
         start_point = torch.tensor(self.start_point.value).to(device)
         end_point = torch.tensor(self.end_point.value).to(device)
         points_world = torch.stack([start_point, end_point]).to(device)
@@ -983,13 +1331,28 @@ class ScPanel:
         center_point = (start_point + end_point) / 2
         path_vector = end_point - start_point
         path_length = torch.linalg.norm(path_vector)
-        up_vector = torch.tensor(self.up_vector).float().to(device)
+        
+        # Get arbitrary point on plane
+        if self.world_up_vector is None:
+            vx, vy, vz = path_vector
+            x, y = 1.0, 0.0
+            if vz != 0:
+                z = -(vx*x + vy*y) / vz
+            else:
+                z = 1.0
+            up_vector = torch.tensor([x, y, z]).float().to(device)
+            up_vector = up_vector / torch.linalg.norm(up_vector)
+            initial_alpha = torch.zeros(center_point.shape).to(center_point) + up_vector
+            lr = 1e-1
+        else:
+            up_vector = torch.tensor(self.world_up_vector).float().to(device)
+            look_dir = torch.cross(path_vector, up_vector, dim=-1)
+            look_dir = look_dir / torch.linalg.norm(look_dir)
+            initial_alpha = look_dir + up_vector
+            lr = 1e-1
 
-        look_dir = torch.cross(path_vector, up_vector, dim=-1)
-        look_dir = look_dir / torch.linalg.norm(look_dir)
-
-        alpha = torch.tensor(look_dir * 1, device=device, requires_grad=True)
-        optimizer = torch.optim.Adam([alpha], lr=1e-1)
+        alpha = torch.tensor(initial_alpha, device=device, requires_grad=True)
+        optimizer = torch.optim.Adam([alpha], lr=lr)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.5)
 
         pbar = trange(1000, desc="Training", dynamic_ncols=True)
@@ -1032,43 +1395,97 @@ class ScPanel:
                 distortion_params=distortion_params,
                 camera_type=camera_type
             )
-
-            R_batch = R.repeat(N, 1, 1)
-            t_batch = t.repeat(N, 1)
-            focal_batch = torch.cat((fx, fy), dim=-1).repeat(N, 1)
-            princpt_batch = torch.cat((cx, cy), dim=-1).repeat(N, 1)
-            img = self.render(cameras, render_mode="rgb", optimizable=True) * 255
-            renders, depths, masks = self.render_smplx_at_3d_position(points_world, R_batch, t_batch, focal_batch, princpt_batch, img, smplx_scale=1.0)
-
-            bbox_masks = mask_to_bbox_mask(masks)
-
-            bbox_masks /= 255.0
-            start_mask_area = bbox_masks[0].sum()
-            end_mask_area = bbox_masks[1].sum()
+            self.update_camera(self.server.get_clients()[0], cameras[0])
 
             depth = self.render(cameras, render_mode='exp_depth', optimizable=True) # (N, H, W)
             pc_cam = project_points_to_image(points_world, K, rotation_matrix, trans, include_depth=True).to(depth.device)
-            lower_bound = torch.zeros([2], device=pc_cam.device)
 
             loss = 0
+            loss_info = {}
 
-            loss_pc_in_image = margin_range_loss(pc_cam[:, 0], lower=lower_bound, upper=torch.stack([width]).to(pc_cam.device), margin=50).mean() + \
-                                margin_range_loss(pc_cam[:, 1], lower=lower_bound, upper=torch.stack([height]).to(pc_cam.device), margin=50).mean()
-            
-            loss += loss_pc_in_image
+            if data_type != 'static':
+                loss_center = torch.abs(pc_cam[0, -1] - pc_cam[1, -1])
+                loss += loss_center
+                loss_info["loss_center"] = f"{loss_center.item():.2f}"
 
-            screen_coord_x, screen_coord_y = pc_cam[:, 0].int(), pc_cam[:, 1].int()
-            pc_in_image = (screen_coord_x >= 0).all() & (screen_coord_x < self.render_wh[0]).all() & (screen_coord_y >= 0).all() & (screen_coord_y < self.render_wh[1]).all()
-            if pc_in_image:
-                depth_from_pc_positions = depth[:, screen_coord_y, screen_coord_x]
-                loss_visible_pc = margin_range_loss(pc_cam[:, 2], lower=lower_bound, upper=depth_from_pc_positions, margin=0.01).mean()
+                R_batch = R.repeat(N, 1, 1)
+                t_batch = t.repeat(N, 1)
+                focal_batch = torch.cat((fx, fy), dim=-1).repeat(N, 1)
+                princpt_batch = torch.cat((cx, cy), dim=-1).repeat(N, 1)
+                img = self.render(cameras, render_mode="rgb", optimizable=True) * 255
+                human_renders, human_depths, human_masks, bb = self.render_smplx_at_3d_position(points_world, R_batch, t_batch, focal_batch, princpt_batch, img, smplx_scale, smplx_up_vector)
+                bbox_masks, bboxes = mask_to_bbox_mask(human_masks)
+                bbox_masks /= 255.0
 
-                maximum_mask_ratio = 0.2
-                minimum_mask_ratio = 0.05
+                target_depth = depth.repeat(N, 1, 1).unsqueeze(-1)
+                target_depth[human_masks <= 0] = 0
+                human_depths[human_masks <= 0] = 0
+
                 total_pixel = width * height
-                loss_human_mask = margin_range_loss(start_mask_area, lower=total_pixel * minimum_mask_ratio, upper=total_pixel * maximum_mask_ratio, margin=0.0).mean() + \
-                                    margin_range_loss(end_mask_area, lower=total_pixel * minimum_mask_ratio, upper=total_pixel * maximum_mask_ratio, margin=0.0).mean()
-                loss += 100 * loss_visible_pc + loss_human_mask
+
+                x_min = bb[:, 0].min()
+                y_min = bb[:, 1].min()
+                x_max = bb[:, 2].max()
+                y_max = bb[:, 3].max()
+                whole_bb = torch.stack([x_min, y_min, x_max, y_max]).unsqueeze(0).to(device)
+
+                bb_widths = (bb[:, 2].clamp(0, width[0]) - bb[:, 0].clamp(0, width[0]))
+                bb_heights = (bb[:, 3].clamp(0, height[0]) - bb[:, 1].clamp(0, height[0]))
+                bb_areas = (bb_widths * bb_heights).unsqueeze(-1)
+
+                points_to_camera = trans.unsqueeze(0) - points_world
+                
+                # angles between points to camera vec and human up vec >= 60
+                loss_camera_over_points = margin_range_loss(torch.sum(points_to_camera * smplx_up_vector.unsqueeze(0), dim=-1), \
+                                                                lower=torch.cos(torch.deg2rad(torch.tensor(camera_human_elevation_degree))).to(device), \
+                                                            margin=0).mean()
+
+                loss_human_mask_in_image = margin_range_loss(whole_bb, \
+                                                                lower=torch.zeros((1, 4)).to(device), \
+                                                            upper=torch.stack([width, height, width, height], dim=-1).to(device), \
+                                                            margin=0).mean()
+                loss_human_mask_area = margin_range_loss(bb_areas, \
+                                                            lower=torch.stack([total_pixel * minimum_mask_ratio])[None].to(device), \
+                                                        upper=torch.stack([total_pixel * maximum_mask_ratio])[None].to(device), \
+                                                        margin=0.0).mean()
+                loss_human_mask_visible = margin_range_loss(human_depths, \
+                                                            lower=torch.zeros(human_depths.shape).to(device), \
+                                                        upper=target_depth, \
+                                                        margin=0.0).mean()
+                
+                loss += 10 * loss_camera_over_points + loss_human_mask_in_image + loss_human_mask_area + 10 * loss_human_mask_visible
+                loss_info["loss_camera_over_points"] = f"{loss_camera_over_points.item():.2f}"
+                loss_info["loss_human_mask_area"] = f"{loss_human_mask_area.item():.2f}"
+                loss_info["loss_human_mask_in_image"] = f"{loss_human_mask_in_image.item():.2f}"
+                loss_info["loss_human_mask_visible"] = f"{loss_human_mask_visible.item():.5f}"
+
+            else:
+                print(pc_cam)
+                self.set_rgb_render_mode()
+                screen_coord_x, screen_coord_y = pc_cam[:, 0], pc_cam[:, 1]
+                pc_in_image = (screen_coord_x >= 0).all() & (screen_coord_x < self.render_wh[0]).all() & (screen_coord_y >= 0).all() & (screen_coord_y < self.render_wh[1]).all() & (pc_cam[:, 2] >= 0).all()
+                loss_pc_in_image = margin_range_loss(pc_cam[:, :2], lower=torch.zeros((1, 2), device=device), upper=torch.cat([width, height], dim=0)[None].to(device), margin=pixel_margin).mean() + \
+                                    margin_range_loss(pc_cam[:, 2], lower=torch.zeros((1, 2), device=device)).mean()
+
+                loss += loss_pc_in_image
+                loss_info["loss_pc_in_image"] = f"{loss_pc_in_image.item():.2f}"
+                loss_camera_scene = depth.mean()
+
+                if pc_in_image:
+
+                    loss_center = torch.abs(pc_cam[0, -1] - pc_cam[1, -1])
+                    loss += 10 * loss_center
+                    loss_info["loss_center"] = f"{loss_center.item():.2f}"
+
+                    depth_from_pc_positions = depth[:, screen_coord_y.int(), screen_coord_x.int()]
+                    loss_visible_pc = margin_range_loss(pc_cam[:, 2], lower=torch.zeros((1, 2)).to(device), upper=depth_from_pc_positions, margin=0.01).mean()
+
+                    if (pc_cam[:, 2] - depth_from_pc_positions > 0).all():
+                        loss += 100 * loss_camera_scene
+                        loss_info["loss_camera_scene"] = f"{loss_camera_scene.item():.2f}"
+
+                    loss += 100 * loss_visible_pc
+                    loss_info["loss_visible_pc"] = f"{loss_visible_pc.item():.2f}"
 
             loss.backward()
             optimizer.step()
@@ -1076,33 +1493,42 @@ class ScPanel:
             if step == 0:
                 print("Initial Loss:", loss.item())
 
-            if pc_in_image:
-                pbar.set_postfix(loss=f"{loss.item():.2f}", loss_pc_in_image=f"{loss_pc_in_image.item():.2f}", loss_visible_pc=f"{loss_visible_pc.item():.2f}", loss_human_mask=f"{loss_human_mask.item():.2f}")
-            else:
-                pbar.set_postfix(loss=f"{loss.item():.2f}", loss_pc_in_image=f"{loss_pc_in_image.item():.2f}")
+            loss_info["loss"] = f"{loss.item():.2f}"
+            pbar.set_postfix(loss_info)
         
         self.set_rgb_render_mode()
 
-        return cameras, img, masks
+        return cameras, img, bbox_masks
     
-    def render_smplx_at_3d_position(self, points_world, R_w2c, t_w2c, focal, princpt, img, smplx_scale=1.0):
+    def render_smplx_at_3d_position(self, points_world, R_w2c, t_w2c, focal, princpt, img, smplx_scale=1.0, smplx_up_vector=torch.tensor([0.0, 0.0, 1.0])):
         """
         points_world : (N,3)
         R_w2c       : (N,3,3) world-to-camera rotation
         t_w2c       : (N,3)  world-to-camera translation
-        focal       : (N, 2) focal length
-        princpt     : (N, 2)
+        focal       : (N,2) focal length
+        princpt     : (N,2)
+        img         : (N,H,W,3)
+        smplx_scale : scalar
+        smplx_up_vector   : (3,)
+
 
         mask        : (N,H,W)
         """
         device = points_world.device
+        N = points_world.shape[0]
         R_w2c = R_w2c.to(device)
         t_w2c = t_w2c.to(device)
         focal = focal.to(device)
         princpt = princpt.to(device)
+        K = torch.zeros((N, 3, 3), device=device)
+        K[:, 0, 0] = focal[:, 0]
+        K[:, 1, 1] = focal[:, 1]
+        K[:, 0, 2] = princpt[:, 0]
+        K[:, 1, 2] = princpt[:, 1]
+        smplx_up_vector = smplx_up_vector[None, :].to(device)
         smpl_x.layer['neutral'] = smpl_x.layer['neutral'].to(device)
 
-        N = points_world.shape[0]
+        
         smplx_scale = torch.tensor([smplx_scale]).float().to(device)
         points_cam = torch.einsum('nij,nj->ni', R_w2c, points_world) + t_w2c
 
@@ -1111,7 +1537,7 @@ class ScPanel:
         yz_inv_axis_angle = torch.tensor((axis * angle))[None].float().to(device)
 
         output = smpl_x.layer['neutral'](
-                                global_orient = torch.stack([yz_inv_axis_angle] * N).to(device), \
+                                global_orient = torch.zeros((N, 3)).to(device), \
                                 body_pose = torch.zeros((N, 21, 3)).to(device), \
                                 jaw_pose = torch.zeros((N, 3)).to(device), \
                                 leye_pose = torch.zeros((N, 3)).to(device), \
@@ -1128,9 +1554,14 @@ class ScPanel:
         mesh_cam = mesh_cam - root_cam[:, None, :]
         kpt_cam = kpt_cam - root_cam[:, None, :]
 
-        R_billboard = rotation_for_billboarding(points_cam, torch.zeros((N, 3)).to(device))
+        up_vector_from_world = torch.einsum('nij,nj->ni', R_w2c, smplx_up_vector.repeat(N, 1))
+        up_vector_from_world = torch.nn.functional.normalize(up_vector_from_world, dim=-1)
+        cam_up_vector = torch.tensor([0., 1., 0.], device=device).expand(N, -1)
+
+        R_up_align = rotation_from_a_to_b(cam_up_vector, up_vector_from_world)
+
         verts = mesh_cam
-        verts = torch.einsum('nij,ntj->nti', R_billboard, verts)  # (N,T,3)
+        verts = torch.einsum('nij,ntj->nti', R_up_align, verts)  # (N,T,3)
         verts = verts + points_cam[:, None, :]
 
         cam_param = {
@@ -1142,21 +1573,79 @@ class ScPanel:
         face = torch.tensor(smpl_x.face[None]).repeat((N, 1, 1)).to(device)
         images, depth, mask = render_smplx(verts, face, cam_param, img) # (N, H, W, 3), (N, H, W, 1), (N, H, W, 1)
 
+        # min, max value of vertex in image coordinates
+        verts_image = project_points_to_image(verts.reshape(-1, 3), K[0]).reshape(N, -1, 2)
+        min_vals, _ = verts_image.min(dim=1)
+        max_vals, _ = verts_image.max(dim=1)
+        x_min = min_vals[:, 0].unsqueeze(-1)
+        y_min = min_vals[:, 1].unsqueeze(-1)
+        x_max = max_vals[:, 0].unsqueeze(-1)
+        y_max = max_vals[:, 1].unsqueeze(-1)
+        bb = torch.cat([x_min, y_min, x_max, y_max], dim=-1)
+
         # Debugging
-        imageio.imwrite(os.path.join(self.static_dir_path, 'start_smpl.png'), images[0].detach().cpu().numpy().astype(np.uint8))
-        imageio.imwrite(os.path.join(self.static_dir_path, 'end_smpl.png'), images[1].detach().cpu().numpy().astype(np.uint8))
+        imageio.imwrite(os.path.join(self.data_path, 'start_smpl.png'), images[0].detach().cpu().numpy().astype(np.uint8))
+        imageio.imwrite(os.path.join(self.data_path, 'end_smpl.png'), images[1].detach().cpu().numpy().astype(np.uint8))
         # imageio.imwrite(os.path.join(self.static_dir_path, 'start_mask.png'), bbox_mask[0].repeat(1, 1, 3).detach().cpu().numpy().astype(np.uint8))
         # imageio.imwrite(os.path.join(self.static_dir_path, 'end_mask.png'), bbox_mask[1].repeat(1, 1, 3).detach().cpu().numpy().astype(np.uint8))
 
-        return images, depth, mask
+        return images, depth, mask, bb
+    
+    def get_priors(self):
+        self.set_path('static')
+        with open(os.path.join(self.cam_param_path, '0.json'), 'r') as f:
+            cam_param = json.load(f)
+            R_w2c = torch.tensor(cam_param['R'])
+            t_w2c = torch.tensor(cam_param['t'])
+            R_c2w = R_w2c.T
+            t_c2w = -R_w2c.T @ t_w2c
+        with open(self.smplx_scale_path, 'r') as f:
+            smplx_scale = torch.tensor(json.load(f))
+        with open(os.path.join(self.smplx_params_path, '0.json'), 'r') as f:
+            smplx_param = json.load(f)
+        with open(self.smplx_shape_path, 'r') as f:
+            smplx_shape = json.load(f)
+        output = smpl_x.layer['neutral'](
+            global_orient = torch.tensor(smplx_param['root_pose'])[None], \
+            body_pose = torch.tensor(smplx_param['body_pose'])[None], \
+            jaw_pose = torch.tensor(smplx_param['jaw_pose'])[None], \
+            leye_pose = torch.tensor(smplx_param['leye_pose'])[None], \
+            reye_pose = torch.tensor(smplx_param['reye_pose'])[None], \
+            left_hand_pose = torch.tensor(smplx_param['lhand_pose'])[None], \
+            right_hand_pose = torch.tensor(smplx_param['rhand_pose'])[None], \
+            expression = torch.tensor(smplx_param['expr'])[None], \
+            betas = torch.tensor(smplx_shape)[None], \
+        )
+        mesh_cam = output.vertices * smplx_scale[None, None, :]
+        kpt_cam = output.joints[:,smpl_x.kpt['idx'],:] * smplx_scale[None, None, :]
+        root_cam = kpt_cam[:,smpl_x.kpt['root_idx'],:].clone()
+
+        axis = np.array([1, 0, 0])
+        angle = np.pi
+        yz_inv_rot = axis_angle_to_matrix(torch.tensor((axis * angle))[None].float())
+        
+        kpt_cam -= root_cam[:, None, :]
+        kpt_cam = kpt_cam @ yz_inv_rot @ R_c2w.T + t_c2w[None, None, :]
+        
+        pelvis_kpt = kpt_cam[:, smpl_x.kpt['idx'][smpl_x.kpt['name'].index('Pelvis')], :]
+        left_shoulder_kpt = kpt_cam[:, smpl_x.kpt['idx'][smpl_x.kpt['name'].index('L_Shoulder')], :]
+        right_shoulder_kpt = kpt_cam[:, smpl_x.kpt['idx'][smpl_x.kpt['name'].index('R_Shoulder')], :]
+        
+        up_vector = (left_shoulder_kpt + right_shoulder_kpt) / 2 - pelvis_kpt
+        up_vector = torch.nn.functional.normalize(up_vector, dim=-1)[0]
+        # Match camera convention
+        up_vector = up_vector
+
+        return smplx_scale.item(), up_vector
             
 
-def depth_to_world_pc(depth_map, K, R_c2w, t_c2w, screen_pos=None):
+def depth_to_pc(depth_map, K, R_c2w=None, t_c2w=None, screen_pos=None):
     """
     depth_map   : (H,W)
     K           : (3,3) intrinsic matrix
     R_c2w       : (3,3) camera-to-world rotation
     t_c2w       : (3,)  camera-to-world translation
+    screen_pos  : (2,)  screen positions
 
     points      : (H x W, 3)
     """
@@ -1170,64 +1659,78 @@ def depth_to_world_pc(depth_map, K, R_c2w, t_c2w, screen_pos=None):
         screen_pos = (int(screen_pos[0] * W), int(screen_pos[1] * H))
         points = points[screen_pos[1], screen_pos[0], :]
     points = np.reshape(points, (-1, 3))
-    points = (R_c2w @ points.T).T + t_c2w
+    if R_c2w is not None and t_c2w is not None:
+        points = (R_c2w @ points.T).T + t_c2w
     return points
 
-def project_points_to_image(points_world, K, R_c2w, t_c2w, include_depth=False):
+def project_points_to_image(points_world, K, R_c2w=None, t_c2w=None, include_depth=False):
     """
     points_world : (N,3)
     K           : (3,3) intrinsic matrix
     R_c2w       : (3,3) camera-to-world rotation
     t_c2w       : (3,)  camera-to-world translation
 
-    uv          : (N,2)
+    uv          : (N,2) or (N,3) if include_depth=True
     """
-
     # world -> camera
-    R_w2c = R_c2w.T
-    t_w2c = -R_c2w.T @ t_c2w
-    X_c = (R_w2c @ points_world.T).T + t_w2c  # (N,3)
-
+    if R_c2w is not None and t_c2w is not None:
+        R_w2c = R_c2w.T
+        t_w2c = -R_c2w.T @ t_c2w
+        X_c = (R_w2c @ points_world.T).T + t_w2c  # (N,3)
+    else:
+        X_c = points_world
+    
     z = X_c[:, 2]
 
     # homogeneous projection
-    uv = (K @ (X_c.T / z)).T  # (N,3)
+    uvw = (K @ X_c.T).T / z[:, None]  # (N,3)
 
-    if include_depth is False:
-        uv = uv[:, :2]
+    if include_depth:
+        uvw[:, 2] *= z
+        uv = uvw
     else:
-        uv[:, 2] = X_c[:, 2]
-
+        uv = uv[:, :2]
+    
     return uv
 
-def margin_range_loss(x, lower=None, upper=None, margin=0.1):
-    assert lower is not None or upper is not None
-    inner_lower = lower + margin
-    inner_upper = upper - margin
-    lower_loss = F.relu(inner_lower - x)
-    upper_loss = F.relu(x - inner_upper)
-    return lower_loss + upper_loss
+def margin_range_loss(x, lower=None, upper=None, margin=0.0):
+    loss = 0
+    if lower is not None:
+        inner_lower = lower + margin
+        lower_loss = F.relu(inner_lower - x)
+        loss += lower_loss
+    if upper is not None:
+        inner_upper = upper - margin
+        upper_loss = F.relu(x - inner_upper)
+        loss += upper_loss
+    return loss
 
 def mask_to_bbox_mask(mask: torch.Tensor) -> torch.Tensor:
     """
     mask: (N, H, W, 1) torch.uint8, binary human mask (0 or 255)
-    return: (N, H, W, 1) torch.uint8, bounding box mask
+
+    return
+    (N, H, W, 1) torch.uint8, bounding box mask
+    (N, 4) torch.uint8, bboxes
     """
     N, H, W, _ = mask.shape
-    mask = mask.squeeze(-1)  # (N, H, W)
-
+    bbox_masks = torch.zeros(mask.shape, device=mask.device).unsqueeze(-1)
+    bboxes = []
     for i in range(N):
-        ys, xs = torch.nonzero(mask[i] > 0, as_tuple=True)
-
+        ys, xs = torch.nonzero(mask[i, :, :, 0] > 0, as_tuple=True)
         if ys.numel() == 0 or xs.numel() == 0:
             continue
 
         y_min, y_max = ys.min(), ys.max()
         x_min, x_max = xs.min(), xs.max()
 
-        mask[i, y_min:y_max+1, x_min:x_max+1] = 255
+        bboxes.append(torch.stack([x_min, y_min, x_max, y_max]))
 
-    return mask.unsqueeze(-1)
+        bbox_masks[i, y_min:y_max+1, x_min:x_max+1] = 255
+    
+    bboxes = torch.stack(bboxes).to(mask.device)
+
+    return bbox_masks, bboxes
 
 def render_smplx(mesh, face, cam_param, bkg, blend_ratio=1.0):
     render_shape = (int(cam_param['princpt'][0][1] * 2), int(cam_param['princpt'][0][0] * 2)) # height, width
@@ -1296,3 +1799,259 @@ def rotation_for_billboarding(obj_pos, cam_pos):
 
     R = torch.stack([right, true_up, forward], dim=1)  # 3x3
     return R
+
+def rotation_from_a_to_b(a: torch.Tensor, b: torch.Tensor, eps=1e-6) -> torch.Tensor:
+
+    a = a / (a.norm(dim=-1, keepdim=True) + eps)
+    b = b / (b.norm(dim=-1, keepdim=True) + eps)
+
+    v = torch.cross(a, b, dim=-1)  # 회전축
+    c = torch.sum(a * b, dim=-1)   # 코사인 각
+    s = v.norm(dim=-1)             # 사인 각
+
+    # cross-product matrix
+    def skew(v):
+        zero = torch.zeros_like(v[..., 0])
+        vx, vy, vz = v[..., 0], v[..., 1], v[..., 2]
+        return torch.stack([
+            torch.stack([zero, -vz, vy], dim=-1),
+            torch.stack([vz, zero, -vx], dim=-1),
+            torch.stack([-vy, vx, zero], dim=-1)
+        ], dim=-2)
+    
+    K = skew(v)
+    I = torch.eye(3, device=a.device, dtype=a.dtype).expand(a.shape[:-1] + (3,3))
+
+    # Rodrigues formula
+    R = I + K + K @ K * ((1 - c) / (s**2 + eps))[..., None, None]
+    return R
+
+def fit_plane_ransac(points, threshold=0.01, min_inliers=100):
+    """
+    points  : (N, 3)
+    """
+    # (x, y, z)
+    X = points[:, :2]
+    y = points[:, 2]
+
+    ransac = RANSACRegressor(residual_threshold=threshold)
+    ransac.fit(X, y)
+    
+    # z = ax + by + d → ax + by - z + d = 0
+    a, b = ransac.estimator_.coef_
+    d = ransac.estimator_.intercept_
+    normal = np.array([a, b, -1.0])
+    normal /= np.linalg.norm(normal)
+    
+    inlier_mask = ransac.inlier_mask_
+    return normal, inlier_mask
+
+
+def iterative_ransac_planes(points, ref_point, threshold=0.1, min_inliers=100, max_planes=1):
+    """
+    points  : (N, 3)
+    """
+    normals = []
+    remaining = points.copy()
+
+    for _ in range(max_planes):
+        if len(remaining) < min_inliers:
+            break
+
+        normal, mask = fit_plane_ransac(remaining, threshold, min_inliers)
+        inliers = remaining[mask]
+        if len(inliers) < min_inliers:
+            break
+
+        # Direct ref point
+        v = ref_point - inliers.mean(0)
+        if np.dot(v, normal) < 0:
+            normal = -normal
+
+        normals.append(normal)
+
+        remaining = remaining[~mask]
+
+    return np.array(normals)
+
+def extract_ground_normals(P, M, ref_point, threshold=0.1, min_inliers=100, max_planes=1):
+    """
+    P: (N, H, W, 3)
+    M: (N, H, W, 1)
+    ref_point: (2,)
+    """
+    all_normals = []
+
+    for n in range(len(P)):
+        points = P[n][M[n, ..., 0] > 0.5]
+        if len(points) < min_inliers:
+            all_normals.append([])
+            continue
+
+        normals = iterative_ransac_planes(points, ref_point, threshold, min_inliers, max_planes)
+        all_normals.append(normals)
+
+    return all_normals
+
+def get_cam_params_on_arc(P1, P2, r_dist=1.0, bin=12):
+    """
+    P1      : (3,)
+    P2      : (3,)
+    r_dist  : int
+    bin     : int
+
+    c2w     : (bin - 1, 4, 4)
+    """
+    M = (P1 + P2) / 2
+
+    v = P2 - P1
+    v_norm = v / np.linalg.norm(v)
+
+    vx, vy, vz = v_norm
+
+    x, y = 1.0, 0.0
+    if vz != 0:
+        z = -(vx*x + vy*y) / vz
+    else:
+        z = 1.0
+
+    u1 = np.array([x, y, z])
+    u1 /= np.linalg.norm(u1)
+    u2 = np.cross(v_norm, u1)
+    u2 /= np.linalg.norm(u2)
+
+    theta = np.linspace(0, 2*np.pi, bin)[:-1]
+    camera_positions = M + r_dist * (np.outer(np.cos(theta), u1) + np.outer(np.sin(theta), u2))
+
+    rotation_matrices = []
+    for C in camera_positions:
+        forward = M - C
+        forward /= np.linalg.norm(forward)
+
+        right = v_norm
+        up = np.cross(forward, right)
+        up /= np.linalg.norm(up)
+
+        R = np.column_stack((right, up, forward))
+        rotation_matrices.append(R)
+
+    rotation_matrices = np.stack(rotation_matrices)
+
+    c2w = np.zeros((bin - 1, 4, 4))
+    c2w[:, :3, :3] = rotation_matrices
+    c2w[:, :3, 3] = camera_positions
+    return c2w
+
+def spherical_kmeans(points, K=10, n_iter=1000):
+    """
+    points  : (N, 3)
+    K       : int
+    n_iter  : int
+
+    centroids   : (K, 3)
+    labels      : (M,)
+    counts      : (M,)
+    """
+    N, D = points.shape
+    centroids = points[np.random.choice(N, K, replace=False)].copy()
+
+    for _ in range(n_iter):
+        similarity = points @ centroids.T  # (N, K)
+        labels = np.argmax(similarity, axis=1)  # (N,)
+
+        for k in range(K):
+            cluster_points = points[labels == k]
+            if len(cluster_points) > 0:
+                c = cluster_points.mean(axis=0)
+                centroids[k] = c / np.linalg.norm(c)
+
+    counts = np.bincount(labels)
+    dominant_idx = np.argmax(counts)
+    dominant_vector = centroids[dominant_idx]
+
+    return dominant_vector, labels, counts
+
+def get_dominant_vector_from_dbscan(X, deg=10):
+    """
+    X   : (N, 3)
+
+    dominant_vector : (3,)
+    num_clusters    : int
+    """
+    db = DBSCAN(eps=1 - np.cos(np.deg2rad(deg)), min_samples=1, metric='cosine')
+    db.fit(X)
+    labels = db.labels_
+    unique_labels = set(labels)
+    if -1 in unique_labels:
+        unique_labels.remove(-1)
+    num_clusters = len(unique_labels)
+
+    largest_cluster = None
+    largest_size = 0
+
+    for label in unique_labels:
+        cluster_points = X[labels == label]
+        if len(cluster_points) > largest_size:
+            largest_size = len(cluster_points)
+            largest_cluster = cluster_points
+    
+    dominant_vector = largest_cluster.mean(axis=0)
+    dominant_vector /= np.linalg.norm(dominant_vector)
+
+    return dominant_vector, num_clusters
+
+def get_cam_params_by_rolling(c2w, bin=12):
+    """
+    c2w     : (4, 4)
+    bin     : int
+
+    new_c2w : (bin, 4, 4)
+    """
+    forward = c2w[:3, 2]
+    right = c2w[:3, 0]
+    up = c2w[:3, 1]
+
+    new_c2w = torch.tensor(c2w)[None].repeat(bin, 1, 1)
+
+    for i in range(bin):
+        theta = np.deg2rad(360 // bin * i)
+        right_new = np.cos(theta) * right + np.sin(theta) * up
+        up_new    = -np.sin(theta) * right + np.cos(theta) * up
+        
+        rot = np.stack([right_new, up_new, forward], axis=1)
+        rot = torch.tensor(rot)
+        new_c2w[i, :3, :3] = rot
+    return new_c2w
+
+def check_pc_visibility(points, image_width, image_height, scene_depth):
+    """
+    points      : (N, 3)
+    image_width : int
+    image_height: int
+    depth       : (H, W)
+
+    visibility  : bool
+    """
+    N = points.shape[0]
+
+    for i in range(N):
+        x, y, z = points[i]
+        ix, iy = int(round(x)), int(round(y))
+        
+        # Check whether points are in image boundary
+        if not (0 <= ix < image_width and 0 <= iy < image_height):
+            return False
+
+        # Check occlusion with scene
+        if z > scene_depth[iy, ix]:
+            return False
+
+    return True
+
+def generate_cluster_colors(N):
+    import matplotlib.colors as mcolors
+    hues = np.linspace(0, 1, N, endpoint=False)
+    saturation = 0.9
+    value = 0.9
+    colors = np.array([mcolors.hsv_to_rgb([h, saturation, value]) for h in hues])
+    return colors
