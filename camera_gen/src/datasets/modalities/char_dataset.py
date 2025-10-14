@@ -10,34 +10,6 @@ from smplx import SMPLX
 from pytorch3d.pytorch3d.transforms import matrix_to_axis_angle
 from pytorch3d.pytorch3d.transforms import matrix_to_rotation_6d
 
-DEBUG_SMPL = os.getenv("SMPL_DEBUG_SHAPES", "0").lower() in {"1", "true", "yes"}
-
-
-def _debug_param_shapes(sample_id: str, params: dict) -> None:
-    if not DEBUG_SMPL:
-        return
-    entries = []
-    for key in ("global_orient", "body_pose", "left_hand_pose", "right_hand_pose", "transl", "betas"):
-        val = params.get(key)
-        if val is None:
-            entries.append(f"{key}=None")
-            continue
-        try:
-            if isinstance(val, torch.Tensor):
-                arr = val.detach()
-                entries.append(
-                    f"{key}=tensor{tuple(arr.shape)} requires_grad={val.requires_grad}"
-                )
-            else:
-                arr = np.asarray(val)
-                entries.append(f"{key}=array{arr.shape}")
-        except Exception as exc:
-            entries.append(f"{key}=error({exc})")
-    warnings.warn(
-        f"[SMPL debug] {sample_id}: " + ", ".join(entries),
-        RuntimeWarning,
-    )
-
 
 class CharacterDataset(Dataset):
     def __init__(
@@ -73,6 +45,7 @@ class CharacterDataset(Dataset):
         else:
             self.velocity = True
         self.align_first_frame = align_first_frame
+      
 
         self.num_cams = num_cams
         self.num_feats = num_feats
@@ -82,39 +55,28 @@ class CharacterDataset(Dataset):
 
         self.load_vertices = load_vertices # True when visualization
 
+        custom_dir_arg = kwargs.get('custom_dir')
+        if custom_dir_arg is None:
+            custom_candidate = (self.dataset_dir.parent / 'custom').resolve()
+        else:
+            custom_candidate = Path(custom_dir_arg).resolve()
+        self.custom_dir = custom_candidate if custom_candidate.exists() else None
+
+
         # Add smplx
         self.smpl_dir = self.dataset_dir / "smplh"
         self.smplx_model_path = self.model_root = self.dataset_dir / "human_model"
         self.smplx_model = SMPLX(model_path=str(self.smplx_model_path), model_type="smplx", gender="neutral")
 
-    def get_smplx_info(self, filename: str):
+    
+
+    def get_smplx_info(self, filename: str, frame_count: int | None = None):
         smplx_info = {}
-        smpl_path = self.smpl_dir / (filename + ".pkl")
+        smpl_path = self.smpl_dir / (filename + ".pkl") 
         with open(smpl_path, "rb") as f:
             params = pickle.load(f, encoding="latin1")
-        
-        # Remove gradients
-        for key in params.keys():
-            params[key] = params[key].detach()
-        
-        # Catch trash data
-        """
-        flag = False
-        for key in params.keys():
-            if torch.isnan(params[key]).any() or torch.isinf(params[key]).any():
-                flag = True
-        if flag:
-            with open('trash.txt', 'a') as f:
-                f.writelines(f"{filename}\n")
-        """
-        # params.keys(): ['betas', 'global_orient', 'body_pose', 'left_hand_pose', 'right_hand_pose', 'transl']
-        # shape: [(N, 10), (N, 1, 3, 3), (N, 21, 3, 3), (N, 15, 3, 3), (N, 15, 3, 3), (N, 3)]
+
         smplx_info["params"] = params
-        
-        # TODO: render mesh
-        if self.load_vertices:
-            pass
-        
         return smplx_info
 
     def __len__(self):
@@ -127,78 +89,80 @@ class CharacterDataset(Dataset):
         char_path = self.data_dir / char_filename
 
         # raw data for visualization
-        raw_char_feature = torch.from_numpy(np.load((char_path))).to(torch.float32) # (N, 3)
+        raw_char_feature = torch.from_numpy(np.load(char_path)).to(torch.float32) # (N, 3)
         padding_size = self.num_cams - raw_char_feature.shape[0]
         padded_raw_char_feature = F.pad(
             raw_char_feature, (0, 0, 0, padding_size)
         ).permute(1, 0)
-        N = raw_char_feature.shape[0]
+
         # Load SMPL-X params
-        smplx_info = self.get_smplx_info(filename)
+        N = raw_char_feature.shape[0]
+        smplx_info = self.get_smplx_info(filename, frame_count=N)
         smplx_params = smplx_info['params']
 
-        center_path = self.center_dir / char_filename  # Center to offset mesh
-        center_offset = torch.from_numpy(np.load(center_path)[0]).to(torch.float32)
-        if self.load_vertices: # True when visualization
-            vert_path = self.vert_dir / char_filename
-            raw_verts = np.load(vert_path, allow_pickle=True)[()]
-            if raw_verts["vertices"] is None:
-                padded_verts = torch.zeros(
-                    (self.num_cams, self.num_vertices, 3), dtype=torch.float32
-                )
-                padded_faces = torch.zeros(
-                    (self.num_cams, self.num_faces, 3), dtype=torch.int16
-                )
+        if self.load_vertices:  # True when visualization
+            B = raw_char_feature.shape[0]
+
+            global_orient = smplx_params['global_orient'].view(B, 1, 3, 3)
+            global_orient = matrix_to_axis_angle(global_orient).view(B, 3)
+
+            transl = smplx_params['transl'].view(B, 3)
+            body_pose = matrix_to_axis_angle(
+                smplx_params['body_pose'].view(B * 21, 3, 3)
+            ).view(B, 21 * 3)
+            left_hand_pose = matrix_to_axis_angle(
+                smplx_params['left_hand_pose'].view(B * 15, 3, 3)
+            ).view(B, 15 * 3)
+            right_hand_pose = matrix_to_axis_angle(
+                smplx_params['right_hand_pose'].view(B * 15, 3, 3)
+            ).view(B, 15 * 3)
+            betas = smplx_params['betas']
+            if betas.shape[0] == 1:
+                betas = betas.expand(B, -1)
             else:
-                verts = torch.from_numpy(raw_verts["vertices"]).to(torch.float32)
-                faces = torch.from_numpy(raw_verts["faces"]).to(torch.int16)
-                verts -= center_offset
-                padded_verts = F.pad(verts, (0, 0, 0, 0, 0, padding_size))
-                padded_faces = F.pad(faces, (0, 0, 0, 0, 0, padding_size))
+                betas = betas.view(B, -1)
 
-        #first frame forward smplx output
-    
-        global_orient = matrix_to_axis_angle(smplx_params['global_orient'][0])
-        transl = smplx_params['transl'][0].view(1,3)
-        body_pose = matrix_to_axis_angle(smplx_params['body_pose'][0].view(21,3,3)).view(1,21*3)
-        left_hand_pose = matrix_to_axis_angle(smplx_params['left_hand_pose'][0].view(15,3,3)).view(1,15*3)
-        right_hand_pose = matrix_to_axis_angle(smplx_params['right_hand_pose'][0].view(15,3,3)).view(1,15*3)
-        betas = smplx_params['betas'][0].view(1,-1)
-        self.smplx_model.use_pca = False
-        out = self.smplx_model(
-            global_orient = global_orient,
-            body_pose = body_pose,
-            left_hand_pose = left_hand_pose,
-            right_hand_pose = right_hand_pose,
-            betas = betas,
-            transl = transl,
-            jaw_pose=torch.zeros(1, 3),
-            leye_pose=torch.zeros(1, 3),
-            reye_pose=torch.zeros(1, 3),
-            expression=torch.zeros(1, 10),
-        )
-            
-        joints0 = out.joints
+            self.smplx_model.use_pca = False
+            out = self.smplx_model(
+                global_orient=global_orient,
+                body_pose=body_pose,
+                left_hand_pose=left_hand_pose,
+                right_hand_pose=right_hand_pose,
+                betas=betas,
+                transl=transl,
+                jaw_pose=torch.zeros(B, 3, device=transl.device),
+                leye_pose=torch.zeros(B, 3, device=transl.device),
+                reye_pose=torch.zeros(B, 3, device=transl.device),
+                expression=torch.zeros(B, 10, device=transl.device),
+                return_verts=True,
+            )
 
+            verts = out.vertices
+            faces = torch.as_tensor(self.smplx_model.faces, device=verts.device)
+            faces = faces.unsqueeze(0).repeat(verts.shape[0], 1, 1).contiguous()
+
+            padded_verts = F.pad(verts, (0, 0, 0, 0, 0, padding_size))
+            padded_faces = F.pad(faces, (0, 0, 0, 0, 0, padding_size))
         
         # Input data for model
         char_feature = raw_char_feature.clone()
+        if self.align_first_frame:
+            root_pose = smplx_params['global_orient'] # (N, 1, 3, 3)
+            root_pose = root_pose[:, 0, :, :] # (N, 3, 3)
 
-        root_pose = smplx_params['global_orient'] # (N, 1, 3, 3)
-        root_pose = root_pose[:, 0, :, :] # (N, 3, 3)
-
-        R0 = root_pose[0, :, :] # (3, 3)
-        R0_inv = R0.T
-        # TODO : smplx forward and t0 should be the first frame of pelvis joing position (out.joints)
-        
-        #t0 = char_feature[0:1, :] # (1, 3)
-        t0 = joints0[0][0]
+            R0 = root_pose[0, :, :] # (3, 3)
+            R0_inv = R0.T
+            
+            # t0 from the raw centers was used during recent debugging sessions
+            t0 = char_feature[0:1, :]
 
         # Normalize
         if self.align_first_frame:
             char_feature = (char_feature - t0) @ R0_inv.T
             root_pose = R0_inv @ root_pose
-            root_pose_6d = matrix_to_rotation_6d(root_pose)
+            #root_pose_6d = matrix_to_rotation_6d(root_pose)
+            
+
             
         
         if self.velocity:
