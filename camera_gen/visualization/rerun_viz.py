@@ -8,7 +8,7 @@ from utils.random_utils import set_random_seed
 from utils.rerun import log_sample
 from visualization.common_viz import get_batch, init
 
-# ------------------------------------------------------------------------------------- #
+
 
 SEED = 33
 W_GUIDANCE = 1.4
@@ -16,8 +16,6 @@ SAMPLE_ID = "2011_KAeAqaA0Llg_00005_00001"
 PROMPT = "While the character moves right, the camera performs a boom bottom."
 
 RENDER_SCALE = 4
-
-# ------------------------------------------------------------------------------------- #
 
 
 def get_normals(vertices: torch.Tensor, faces: torch.Tensor):
