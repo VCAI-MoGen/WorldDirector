@@ -113,5 +113,5 @@ if __name__ == "__main__":
             caption=caption,
         )
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        rr.save(f"{SAMPLE_ID}_{timestamp}.rrd")
-        print(f"saved rerun log to {SAMPLE_ID}_{timestamp}.rrd")
+        rr.save(f"./outputs/{SAMPLE_ID}_{timestamp}.rrd")
+        print(f"saved rerun log to ./outputs/rrd_files/{SAMPLE_ID}_{timestamp}.rrd")
