@@ -6,7 +6,7 @@ Note: You can specify the:
 - **DIRECTOR architecture**, i.e. A: `incontext_director`, B: `adaln_director`, C: `ca_director`.
 - **Subset**, `pure` (only simple camera trajectories) or `mixed` (simple and complex camera trajectories).
   
-Note: We use C: 'ca_director' and 'mixed' as subset 
+Note: We use C: 'ca_director'as primary architecture and 'mixed' as primary subset 
 
 To launch training, run:
 ```
