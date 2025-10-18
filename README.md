@@ -40,7 +40,17 @@ export PYTHONPATH=$(pwd)
 
 python visualization/rerun_viz.py
 ```
+</details>
 
+<details><summary>Viser visualization</summary>
+&emsp;
+
+To launch Viser visualization script, run:
+```
+export PYTHONPATH=$(pwd)
+
+python visualization/viser_gen.py
+```
 
 </details>
 <br>
