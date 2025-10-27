@@ -38,10 +38,13 @@ def get_extensions():
     sources = glob.glob(osp.join(extensions_dir, "csrc", "*.cu")) + glob.glob(
         osp.join(extensions_dir, "csrc", "*.cpp")
     )
-    sources += [osp.join(extensions_dir, "ext.cpp")]
+    sources = [path for path in sources if "hip" not in path]
 
     undef_macros = []
     define_macros = []
+
+    if sys.platform == "win32":
+        define_macros += [("gsplat_EXPORTS", None)]
 
     extra_compile_args = {"cxx": ["-O3"]}
     if not os.name == "nt":  # Not on Windows:
@@ -69,7 +72,7 @@ def get_extensions():
 
     nvcc_flags = os.getenv("NVCC_FLAGS", "")
     nvcc_flags = [] if nvcc_flags == "" else nvcc_flags.split(" ")
-    nvcc_flags += ["-O3", "--use_fast_math", "-std=c++17"]
+    nvcc_flags += ["-O3", "--use_fast_math"]
     if LINE_INFO:
         nvcc_flags += ["-lineinfo"]
     if torch.version.hip:
@@ -84,10 +87,7 @@ def get_extensions():
     nvcc_flags += ["-diag-suppress", "20012,186"]
     extra_compile_args["nvcc"] = nvcc_flags
     if sys.platform == "win32":
-        extra_compile_args["nvcc"] += [
-            "-DWIN32_LEAN_AND_MEAN",
-            "-allow-unsupported-compiler",
-        ]
+        extra_compile_args["nvcc"] += ["-DWIN32_LEAN_AND_MEAN"]
 
     current_dir = pathlib.Path(__file__).parent.resolve()
     glm_path = osp.join(current_dir, "gsplat", "cuda", "csrc", "third_party", "glm")
