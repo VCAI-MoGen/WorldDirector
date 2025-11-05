@@ -1,0 +1,1 @@
+python extract_masks_from_traj_video.py --root_path /data1/cympyc1785/SCVideo/data/office0_demo2

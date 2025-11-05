@@ -1,3 +1,5 @@
 data
 evaluation/data
 evaluation/evaluation_results
+*.npy
+/gs_render/tools/DIRECTOR/checkpoints

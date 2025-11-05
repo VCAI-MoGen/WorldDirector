@@ -1,0 +1,47 @@
+defaults:
+  - dataset: traj+caption+char
+  - diffuser: director_edm
+  - compnode: cpu
+  - _self_
+
+timestamp: ${now:%Y-%m-%d-%H-%M-%S}
+
+outdir: null
+entity: null
+project_name: trajectory-diffusion
+results_dir: ./results
+data_dir: ./et-data
+xp_name: ${diffuser.loss.name}-${diffuser.network.module.name}-${dataset.name}
+log_dir: ${results_dir}/${xp_name}/${timestamp}
+# checkpoint_path: checkpoints/director/ca-mixed-e449.ckpt # original
+# checkpoint_path:  ./checkpoints_train/1025_S_T_V_T_AF_F_Evalnorm_train/epoch=449.ckpt # smoothing only
+# checkpoint_path: ./custom_checkpoints/before_standardization/smoothing_n_depth_filtered_epoch=419.ckpt # smoothing + depth filtered
+checkpoint_path: ./custom_checkpoints/smoothing_n_depth_filtered_epoch=449.ckpt # smoothing + depth filtered + stat
+
+seed: 42
+save_and_sample_every: 10
+num_train_epochs: 1001
+log_wandb: true
+batch_size: 128
+
+hydra:
+  run:
+    dir: ./${results_dir}/${xp_name}/${timestamp}
+
+# Added for control
+guidance_control:
+  root_path: "/data1/cympyc1785/SCVideo/data/office0_demo2"
+  prompt: ""
+  custom_guidance_weight: 1.0
+  cfg_num_step: 2
+  post_guidance_num_steps: 0
+  custom_guidance_ctrl:
+    roll_constraint: 0.3
+    cam_over_point: null
+    mask_in_image: null
+    mask_area: null # 일단 봉쇄
+    mask_depth: null
+    feat_reg_weight: 0.5
+    grad_reg_weight: 0.5
+    debug: false
+  
