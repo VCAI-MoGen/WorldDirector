@@ -222,16 +222,16 @@ class Dataset(torch.utils.data.Dataset):
         focal_vggt = np.array([focal[0] / origin_w * vggt_w, focal[1] / origin_h * vggt_h], dtype=np.float32)
         princpt_vggt = np.array([vggt_w // 2, vggt_h // 2],  dtype=np.float32)
         focal_kpt = np.array([focal[0] / bbox[2] * self.cfg.kpt_proj_shape[1], focal[1] / bbox[3] * self.cfg.kpt_proj_shape[0]], dtype=np.float32)
-        princpt_kpt = np.array([(princpt[0] - bbox[0]) / bbox[2] * self.cfg.kpt_proj_shape[1], (princpt[1] - bbox[1]) / bbox[3] * self.cfg.kpt_proj_shape[1]], dtype=np.float32)
+        princpt_kpt = np.array([(princpt[0] - bbox[0]) / bbox[2] * self.cfg.kpt_proj_shape[1], (princpt[1] - bbox[1]) / bbox[3] * self.cfg.kpt_proj_shape[0]], dtype=np.float32)
         focal_depth = np.array([focal[0] / bbox[2] * self.cfg.depth_render_shape[1], focal[1] / bbox[3] * self.cfg.depth_render_shape[0]], dtype=np.float32)
-        princpt_depth = np.array([(princpt[0] - bbox[0]) / bbox[2] * self.cfg.depth_render_shape[1], (princpt[1] - bbox[1]) / bbox[3] * self.cfg.depth_render_shape[1]], dtype=np.float32)
+        princpt_depth = np.array([(princpt[0] - bbox[0]) / bbox[2] * self.cfg.depth_render_shape[1], (princpt[1] - bbox[1]) / bbox[3] * self.cfg.depth_render_shape[0]], dtype=np.float32)
 
         focal_vggt = np.array([focal[0] / origin_w * vggt_w, focal[1] / origin_h * vggt_h])
         princpt_vggt = np.array([princpt[0] / origin_w * vggt_w, princpt[1] / origin_h * vggt_h])
         focal_kpt_vggt = np.array([focal_vggt[0] / bbox_vggt[2] * self.cfg.kpt_proj_shape[1], focal_vggt[1] / bbox_vggt[3] * self.cfg.kpt_proj_shape[0]], dtype=np.float32)
-        princpt_kpt_vggt = np.array([(princpt_vggt[0] - bbox_vggt[0]) / bbox_vggt[2] * self.cfg.kpt_proj_shape[1], (princpt_vggt[1] - bbox_vggt[1]) / bbox_vggt[3] * self.cfg.kpt_proj_shape[1]], dtype=np.float32)
+        princpt_kpt_vggt = np.array([(princpt_vggt[0] - bbox_vggt[0]) / bbox_vggt[2] * self.cfg.kpt_proj_shape[1], (princpt_vggt[1] - bbox_vggt[1]) / bbox_vggt[3] * self.cfg.kpt_proj_shape[0]], dtype=np.float32)
         focal_depth_vggt = np.array([focal_vggt[0] / bbox_vggt[2] * self.cfg.depth_render_shape[1], focal_vggt[1] / bbox_vggt[3] * self.cfg.depth_render_shape[0]], dtype=np.float32)
-        princpt_depth_vggt = np.array([(princpt_vggt[0] - bbox_vggt[0]) / bbox_vggt[2] * self.cfg.depth_render_shape[1], (princpt_vggt[1] - bbox_vggt[1]) / bbox_vggt[3] * self.cfg.depth_render_shape[1]], dtype=np.float32)
+        princpt_depth_vggt = np.array([(princpt_vggt[0] - bbox_vggt[0]) / bbox_vggt[2] * self.cfg.depth_render_shape[1], (princpt_vggt[1] - bbox_vggt[1]) / bbox_vggt[3] * self.cfg.depth_render_shape[0]], dtype=np.float32)
 
         img_orig = load_img(self.img_paths[frame_idx])
 

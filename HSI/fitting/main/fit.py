@@ -40,7 +40,7 @@ def main():
     smplx_params = {}
 
     smplx_shape = nn.Parameter(torch.zeros((smpl_x.shape_param_dim)).float().cuda())
-    smplx_scale = nn.Parameter(torch.tensor([0.5], requires_grad=True).float().cuda())
+    smplx_scale = nn.Parameter(torch.tensor([1.0], requires_grad=True).float().cuda())
 
     for frame_idx in trainer.smplx_params.keys():
         smplx_params[frame_idx] = {}
@@ -71,6 +71,7 @@ def main():
                     trainer.get_optimizer(optimizable_params)
                 elif ((epoch == 0 or epoch == 1) and (itr_opt == cfg.stage_itr[0])):
                     # all parameters
+                    optimizable_params = []
                     if epoch == (cfg.end_epoch - 1):
                         optimizable_params = [] # do not optimize shared parameters to make per-frame parameters consistent with the shared ones
                     else:
@@ -84,8 +85,16 @@ def main():
                     trainer.get_optimizer(optimizable_params)
                 elif ((epoch > 1) and (itr_opt == 0)):
                     optimizable_params = []
-                    for key in ['body_pose', 'lhand_pose', 'rhand_pose', 'jaw_pose', 'leye_pose', 'reye_pose', 'expr']:
-                        optimizable_params.append({'params': [smplx_params[int(frame_idx)][key]], 'name': key, 'lr': cfg.lr})
+                    if epoch == (cfg.end_epoch - 1):
+                        optimizable_params = [] # do not optimize shared parameters to make per-frame parameters consistent with the shared ones
+                    else:
+                        optimizable_params = [{'params': [smplx_shape], 'name': 'smplx_shape', 'lr': cfg.lr}] # all shared parameters
+                        optimizable_params.append({'params': [smplx_scale], 'name': 'smplx_scale', 'lr': cfg.lr})
+                    for frame_idx in data['frame_idx']:
+                        # for key in ['root_pose', 'body_pose', 'lhand_pose', 'rhand_pose', 'trans', 'jaw_pose', 'leye_pose', 'reye_pose', 'expr']:
+                        for key in ['root_pose', 'trans']:
+                        # for key in ['trans']:
+                            optimizable_params.append({'params': [smplx_params[int(frame_idx)][key]], 'name': key, 'lr': cfg.lr})
 
                     trainer.get_optimizer(optimizable_params)
 
