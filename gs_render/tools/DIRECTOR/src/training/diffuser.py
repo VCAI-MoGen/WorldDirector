@@ -13,6 +13,7 @@ import torch
 from torchtyping import TensorType
 import torch.nn as nn
 import lightning as L
+import math
 
 from utils.random_utils import StackedRandomGenerator
 from utils.rotation_utils import project_so3
@@ -87,12 +88,24 @@ class Diffuser(L.LightningModule):
         self.gsplat_scene = None
 
         self._cfg_callback = None
+        self._full_step_guidance_callback = None
+        self._roll_replace_callback = None
         self.guidance_ctrl = None
 
     def register_cfg_callback(self, callback):
         if not callable(callback):
             raise ValueError(f"Callback Not Callable : {callback}")
         self._cfg_callback = callback
+
+    def register_full_step_guidance_callback(self, callback):
+        if not callable(callback):
+            raise ValueError(f"Callback Not Callable : {callback}")
+        self._full_step_guidance_callback = callback
+    
+    def register_roll_replace_callback(self, callback):
+        if not callable(callback):
+            raise ValueError(f"Callback Not Callable : {callback}")
+        self._roll_replace_callback = callback
 
     # ---------------------------------------------------------------------------------- #
 
@@ -481,7 +494,7 @@ class Diffuser(L.LightningModule):
         self.get_matrix = self.trainer.datamodule.train_dataset.get_matrix
         self.v_get_matrix = self.trainer.datamodule.eval_dataset.get_matrix
 
-    def predict_step(self, batch, batch_idx, camera_start_pose=None):
+    def predict_step(self, batch, batch_idx, camera_start_pose=None, camera_end_pose=None):
         ref_samples, mask = batch["traj_feat"], batch["padding_mask"]
 
         if len(self.modalities) > 0:
@@ -502,7 +515,9 @@ class Diffuser(L.LightningModule):
         # cf edm2 sigma_data normalization / https://arxiv.org/pdf/2312.02696.pdf
         if self.edm2_normalization:
             ref_samples *= self.loss_fn.sigma_data
-        _, gen_samples = self.sample(self.ema.ema_model, ref_samples, cond_data, mask, camera_start_pose)
+        _, gen_samples = self.sample(self.ema.ema_model, ref_samples, cond_data, mask,
+                                     camera_start_pose=camera_start_pose,
+                                     camera_end_pose=camera_end_pose,)
 
         batch["ref_samples"] = torch.stack([self.v_get_matrix(x) for x in ref_samples])
         batch["gen_samples"] = torch.stack([self.get_matrix(x) for x in gen_samples])
@@ -519,7 +534,8 @@ class Diffuser(L.LightningModule):
         cond_samples: TensorType["num_samples", "num_feats"],
         mask: TensorType["num_samples", "num_feats"],
         external_seeds: List[int] = None,
-        camera_start_pose: TensorType["num_feats"] = None,
+        camera_start_pose = None,
+        camera_end_pose=None,
     ) -> Tuple[RawTrajectory, RawTrajectory]:
         # Pick latents
         num_samples = traj_samples.shape[0]
@@ -547,11 +563,16 @@ class Diffuser(L.LightningModule):
             S_max=self.S_max,
             S_noise=self.S_noise,
             cfg_callback=self._cfg_callback,
+            full_g_callback=self._full_step_guidance_callback,
+            roll_replace_callback=self._roll_replace_callback,
             camera_start_pose=camera_start_pose,
+            camera_end_pose=camera_end_pose,
             cfg_num_step=self.guidance_ctrl.cfg_num_step if self.guidance_ctrl.cfg_num_step else 0,
+            roll_replace_num=self.guidance_ctrl.roll_replace_num_steps if self.guidance_ctrl.roll_replace_num_steps else 0,
+            reg_num_steps=self.guidance_ctrl.reg_num_steps if self.guidance_ctrl.reg_num_steps else 0,
             post_guidance_num_steps=self.guidance_ctrl.post_guidance_num_steps if self.guidance_ctrl.post_guidance_num_steps else 0,
             feat_reg_weight=self.guidance_ctrl.custom_guidance_ctrl.feat_reg_weight if self.guidance_ctrl.custom_guidance_ctrl.feat_reg_weight else 0,
-            grad_reg_weight=self.guidance_ctrl.custom_guidance_ctrl.grad_reg_weight if self.guidance_ctrl.custom_guidance_ctrl.grad_reg_weight else 0,
+            look_target_weight=self.guidance_ctrl.custom_guidance_ctrl.look_target if self.guidance_ctrl.custom_guidance_ctrl.look_target else 0,
         )
 
         return latents, generations
@@ -574,11 +595,16 @@ class Diffuser(L.LightningModule):
         S_max=float("inf"),
         S_noise=1,
         camera_start_pose=None,
+        camera_end_pose=None,
         cfg_callback=None,
+        full_g_callback=None,
+        roll_replace_callback=None,
         cfg_num_step=0,
         post_guidance_num_steps=0,
-        feat_reg_weight=1.0,
-        grad_reg_weight=1.0,
+        roll_replace_num=0,
+        reg_num_steps=0,
+        feat_reg_weight=0.0,
+        look_target_weight=0.0,
     ):
         # Time step discretization.
         step_indices = torch.arange(num_steps, device=latents.device)
@@ -592,25 +618,15 @@ class Diffuser(L.LightningModule):
             [torch.as_tensor(t_steps), torch.zeros_like(t_steps[:1])]
         )  # t_N = 0
 
-        print(t_steps)
-
-        # optimizer = torch.optim.Adam([alpha], lr=lr)
-        # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.5)
-
         # Main sampling loop.
         bool_mask = ~mask.to(bool)
+        valid_len = mask.bool().sum(dim=-1) - 1
         x_next = latents * t_steps[0]
         bs = latents.shape[0]
         for i, (t_cur, t_next) in enumerate(
             zip(t_steps[:-1], t_steps[1:])
         ):  # 0, ..., N-1
             x_cur = x_next
-            # x_copy = x_cur.detach()
-            
-            # Hard Replace
-            if camera_start_pose is not None:
-                print("replace")
-                x_cur[:, :, 0] = camera_start_pose
 
             # Increase noise temporarily.
             gamma = (
@@ -620,6 +636,15 @@ class Diffuser(L.LightningModule):
             )
             t_hat = torch.as_tensor(t_cur + gamma * t_cur)
             x_hat = x_cur + (t_hat**2 - t_cur**2).sqrt() * S_noise * randn_like(x_cur)
+
+            # Hard Replace
+            if camera_start_pose is not None:
+                print("replace cam start pose")
+                x_hat[:, :, 0] = camera_start_pose
+            
+            if camera_end_pose is not None:
+                print("replace cam end pose")
+                x_hat[:, :, valid_len.item()] = camera_start_pose # batch 1 가정
 
             # Euler step.
             if class_labels is not None:
@@ -665,56 +690,67 @@ class Diffuser(L.LightningModule):
                 d_prime = (x_next - denoised) / t_next
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 
-            # diff = x_next - x_copy
-            # print("===== CFG Diff =====")
-            # # print(diff)
-            # print("mean:", diff.mean())
-            # print("max", diff.max())
-            # print("min", diff.min())
-            # print("====================")
-            # x_copy = x_next.detach()
-            
-            # --- Regularization gradient guidance 추가 ---
-            def velocity_l2_loss(x0, interval):
-                d1 = x0[:, :, interval:] - x0[:, :, :-interval]
-                return (d1 ** 2).mean()
+            # weight_scaling = (num_steps - i) / num_steps
+            weight_scaling = math.cos(math.pi/2 * i / num_steps)
+            print("scaling", weight_scaling)
+            # Full Step Guidance
+            if custom_guidance_weight is not None:
+                if not callable(full_g_callback):
+                    raise ValueError(f"Callback Not Callable : {full_g_callback}")
+                grad = full_g_callback(x_next, mask)
+                if grad is not None:
+                    x_next = x_next - weight_scaling * custom_guidance_weight * grad
 
-            def acceleration_l2_loss(x0):
-                """
-                x0: (B, P, T) P:9
-                """
-                d1 = x0[:, :, 1:] - x0[:, :, :-1]
-                d2 = d1[:, :, 1:] - d1[:, :, :-1]
-                return (d2 ** 2).mean()
-
+            # Custom Guidance
             cfg_start_step = num_steps - cfg_num_step
             if custom_guidance_weight is not None and i >= cfg_start_step:
                 if not callable(cfg_callback):
                     raise ValueError(f"Callback Not Callable : {cfg_callback}")
+                # cfg_weight_scaling = (num_steps - i) / cfg_num_step
+                cfg_weight_scaling = math.cos(math.pi/2 * (i - cfg_start_step) / cfg_num_step)
+                print("cfg")
                 grad = cfg_callback(x_next, mask)
-                x_next = x_next - custom_guidance_weight * grad
+                if grad is not None:
+                    x_next = x_next - cfg_weight_scaling * custom_guidance_weight * grad
+            
+            # Roll Hard Replace
+            if roll_replace_callback is not None and i >= num_steps - roll_replace_num:
+                print("roll hard replace")
+                if not callable(roll_replace_callback):
+                    raise ValueError(f"Callback Not Callable : {roll_replace_callback}")
+                
+                x_next = roll_replace_callback(x_next, mask)
 
+            # Feat Reg Term
+            def velocity_l2_loss(x0, interval):
+                d1 = x0[:, :, interval:] - x0[:, :, :-interval]
+                return (d1 ** 2).mean()
+            
+            def velocity_3d_l2_loss(x0):
+                d1 = x0[:, 6:]
+                return (d1 ** 2).mean()
+            
+            def velocity_6d_l2_loss(x0):
+                d1 = x0[:, :6, 1:] - x0[:, :6, :-1]
+                return (d1 ** 2).mean()
+            
+            if feat_reg_weight is not None and feat_reg_weight > 0.0 and i >= num_steps - reg_num_steps:
+                print("reg")
+                cfg_weight_scaling = math.cos(math.pi/2 * (num_steps - i) / reg_num_steps)
                 x_next_copy = x_next.detach().clone().requires_grad_(True)
-                feat_reg_loss = 0.5 * acceleration_l2_loss(x_next_copy)
-                feat_reg_loss += 0.5 * velocity_l2_loss(x_next_copy, 1)
+                feat_reg_loss = velocity_3d_l2_loss(x_next_copy)
+                feat_reg_loss += 5 * velocity_6d_l2_loss(x_next_copy)
+                feat_reg_loss *= feat_reg_weight
                 feat_reg_grad = torch.autograd.grad(feat_reg_loss, x_next_copy, create_graph=False)[0]
-                x_next = x_next - feat_reg_weight * feat_reg_grad
-
-                grad_copy = grad.detach().clone().requires_grad_(True)
-                grad_reg_loss = (grad_copy ** 2).mean()
-                grad_reg_grad = torch.autograd.grad(grad_reg_loss, grad_copy, create_graph=False)[0]
-                x_next = x_next - grad_reg_weight * grad_reg_grad
+                x_next = x_next - 0.1 * feat_reg_grad
 
                 x_next = torch.nan_to_num(x_next) # stability
-
-                # diff = x_next - x_copy
-                # print("===== Custom Guidance Diff =====")
-                # # print(diff)
-                # print("mean:", diff.mean())
-                # print("max", diff.max())
-                # print("min", diff.min())
-                # print("================================")
+            
+            # print(x_next[:, :, 0])
+            # print(x_next[:, :, 1])
+            # print(x_next[:, :, 2])
             print(f"Step {i + 1} Done.")
+
             # ------------------------------------------
 
         # Post Guidance
@@ -724,8 +760,6 @@ class Diffuser(L.LightningModule):
                     raise ValueError(f"Callback Not Callable : {cfg_callback}")
                 grad = cfg_callback(x_next, mask)
                 x_next = x_next - custom_guidance_weight * grad
-                # print(custom_guidance_weight * ((post_guidance_num_steps - t)/post_guidance_num_steps))
-                # x_next = x_next - custom_guidance_weight * ((post_guidance_num_steps - t)/post_guidance_num_steps) * grad
                 x_next = torch.nan_to_num(x_next) # stability
 
         return x_next

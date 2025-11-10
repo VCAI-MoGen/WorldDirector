@@ -26,8 +26,11 @@ from src.training.diffuser import Diffuser
 from src.datasets.multimodal_dataset import MultimodalDataset
 
 from hydra.core.global_hydra import GlobalHydra
+from scipy.signal import savgol_filter
+from pytorch3d.transforms import matrix_to_quaternion, quaternion_to_matrix
 
 import sys
+import random
 
 def init_remote(
     config_name: str, config_abs_dir: str
@@ -196,6 +199,52 @@ def smooth_camera_parameters(positions, rotations, pos_sigma=2, rot_window=5):
 
     return smoothed_positions
 
+def fix_quaternions(quats):
+    """
+    Fix quaternion sign flipping for (F, 4) sequence.
+    Makes quaternions continuous over time.
+    """
+    assert quats.ndim == 2 and quats.shape[1] == 4
+
+    result = quats.copy()
+
+    # dot product between consecutive quaternions (F-1,)
+    dots = np.sum(result[1:] * result[:-1], axis=1)
+
+    # if dot < 0, flip sign
+    for i in range(1, len(result)):
+        if dots[i-1] < 0:
+            result[i] = -result[i]
+
+    return result
+
+def smoothing_filter(poses, window_length):
+    """Smooth poses"""
+    device = poses.device
+    dtype = poses.dtype
+
+    rotation, trans = poses[:, :3, :3], poses[:, :3, 3]
+
+    # Convert poses to quaternions.
+    qs = matrix_to_quaternion(rotation).cpu().numpy()
+    qs = fix_quaternions(qs)
+
+    # Smooth the quaternions.
+    qs_clean = savgol_filter(qs, window_length=window_length, polyorder=2, axis=0)
+    qs_clean = qs_clean / np.linalg.norm(qs_clean, axis=-1, keepdims=True)
+
+    qs_clean_tensor = torch.from_numpy(qs_clean).float().to(device)
+    rotation_clean = quaternion_to_matrix(qs_clean_tensor)
+
+    trans_clean = savgol_filter(trans.cpu().numpy(), window_length=window_length, polyorder=2, axis=0)
+    trans_clean = torch.from_numpy(trans_clean).to(device)
+
+    clean_poses = poses.clone()
+    clean_poses[:, :3, :3] = rotation_clean
+    clean_poses[:, :3, 3] = trans
+
+    return clean_poses
+
 class RemoteDirector:
     def __init__(self):
         self.diffuser, self.clip_model, self.dataset, self.device, self.control_cfg = \
@@ -203,8 +252,11 @@ class RemoteDirector:
         
         self.root_path = self.control_cfg.root_path
         self.PROMPT = self.control_cfg.prompt
-
-        SEED = 33
+        
+        if self.control_cfg.random_seed:
+            SEED = random.randint(10, 100)
+        else:
+            SEED = 33
         W_GUIDANCE = 1.4
 
         set_random_seed(SEED)
@@ -217,31 +269,32 @@ class RemoteDirector:
         self.focal = [312.7740969872587, 312.7740969872587]
         self.princpt = [360, 240]
 
-    def remote_run_director(self, save_path=None, camera_start_pose=None):
-        seq_feat = self.diffuser.net.model.clip_sequential
-        char_dataset = self.dataset.modality_datasets['char']
+        self.K = torch.tensor(
+            [
+                [self.focal[0],           0.0, self.princpt[0] / 2.0],
+                [          0.0, self.focal[1], self.princpt[1] / 2.0],
+                [          0.0,           0.0,                   1.0],
+            ]
+        ) # (3, 3)
+
+        self.seq_feat = self.diffuser.net.model.clip_sequential
+        self.char_dataset = self.dataset.modality_datasets['char']
 
         char_traj_dir = os.path.join(self.root_path, 'traj', 'smplx_optimized', 'traj_smoothed')
         source_cam_params_path = os.path.join(self.root_path, 'traj', 'cam_params_scene')
 
-        target_cam_params_path = os.path.join(self.root_path, 'detailed', 'cam_params_scene')
-        os.makedirs(target_cam_params_path, exist_ok=True)
-        if save_path is not None:
-            target_cam_params_path = os.path.join(save_path, 'detailed', 'cam_params_scene')
-            os.makedirs(target_cam_params_path, exist_ok=True)
-
-        up_vector_path = os.path.join(self.root_path, 'up_vector.npy')
+        self.up_vector_path = os.path.join(self.root_path, 'up_vector.npy')
         smplx_scale_path = os.path.join(self.root_path, 'traj', 'smplx_optimized', 'scale.json')
         with open(smplx_scale_path, 'r') as f:
             self.smplx_scale = json.load(f)[0]
 
         char_traj = traj_dir_to_npy(char_traj_dir)
-        text = self.PROMPT
 
-        self.raw_char_traj = torch.tensor(char_traj)
+        self.raw_char_traj = torch.tensor(char_traj, dtype=float)
 
         # ===== Print Parameters =====
-        print("Prompt :", text)
+        print("Prompt :", self.PROMPT)
+        print("SEED :", SEED)
         print("Guidance control :", self.control_cfg)
         # ============================
 
@@ -256,25 +309,44 @@ class RemoteDirector:
         t_c2w = -R_w2c.T @ t_w2c
         char_traj = (R_c2w @ char_traj.T).T + t_c2w[None]
 
+        self.world_char_traj = char_traj
+
         # scaling by smplx_scale
-        char_traj = char_traj / self.smplx_scale
+        char_traj = self.world_char_traj / self.smplx_scale
 
         # start point as origin
-        self.char_start = char_traj[0:1].copy() # (1, 3)
-        char_traj = char_traj - self.char_start
+        char_start = char_traj[0:1].copy() # (1, 3)
+        char_traj = char_traj - char_start
 
         # rotate scene coordinates --> director character trajectory coordinates
-        scene_up_vector = np.load(up_vector_path)
-        self.R_scene_up_to_director_up = rotation_matrix_from_vectors(scene_up_vector, np.array([0.0, -1.0, 0.0]))
-        char_traj = (self.R_scene_up_to_director_up @ char_traj.T).T
+        scene_up_vector = np.load(self.up_vector_path)
+        R_scene_up_to_director_up = rotation_matrix_from_vectors(scene_up_vector, np.array([0.0, -1.0, 0.0]))
+        char_traj = (R_scene_up_to_director_up @ char_traj.T).T
 
-        self.char_traj = torch.tensor(char_traj)
+        # Save for others
+        self.char_start = torch.tensor(char_start, dtype=float)
+        self.char_traj = torch.tensor(char_traj, dtype=float)
+        self.R_scene_up_to_director_up = torch.tensor(R_scene_up_to_director_up, dtype=float)
 
-        char_feature, padding_mask = encode_char_traj(char_dataset, char_traj)
-        batch = get_batch_custom(char_feature, padding_mask, text, self.clip_model, seq_feat, self.device)
+        self.char_feature, self.padding_mask = encode_char_traj(self.char_dataset, char_traj)
 
+
+    def remote_run_director(self, save_path=None, camera_start_pose=None, camera_end_pose=None):
+        target_cam_params_path = os.path.join(self.root_path, 'detailed', 'cam_params_scene')
+        os.makedirs(target_cam_params_path, exist_ok=True)
+        if save_path is not None:
+            target_cam_params_path = os.path.join(save_path, 'detailed', 'cam_params_scene')
+            os.makedirs(target_cam_params_path, exist_ok=True)
+
+
+        padding_mask = self.padding_mask
+        batch = get_batch_custom(self.char_feature, padding_mask, self.PROMPT, self.clip_model, self.seq_feat, self.device)
+
+        
         # with torch.no_grad():
-        out = self.diffuser.predict_step(batch, 0, camera_start_pose)
+        if not self.control_cfg.start_pose_replace:
+            camera_start_pose = None
+        out = self.diffuser.predict_step(batch, 0, camera_start_pose, camera_end_pose)
         padding_mask = out["padding_mask"][0].to(bool).cpu()
         valid_len = int(padding_mask.sum().item())
         if valid_len == 0:
@@ -282,16 +354,25 @@ class RemoteDirector:
 
         traj_matrices = out["gen_samples"][0].cpu() # (num_cams, 4, 4) (Padded)
         generated_cam_traj = traj_matrices[padding_mask] # (N, 4, 4)
-        generated_cam_traj_npy = generated_cam_traj.detach().cpu().numpy()
+        # generated_cam_traj_npy = generated_cam_traj.detach().cpu().numpy()
 
-        smoothed_pos = smooth_camera_parameters(generated_cam_traj_npy[:, :3, 3], generated_cam_traj_npy[:, :3, :3])
-        generated_cam_traj_npy[:, :3, 3] = smoothed_pos
+        # smoothed_pos = smooth_camera_parameters(generated_cam_traj_npy[:, :3, 3], generated_cam_traj_npy[:, :3, :3])
+        generated_cam_traj_npy = smoothing_filter(generated_cam_traj, window_length=5).detach().cpu().numpy()
+        # generated_cam_traj_npy = smoothed_pos
+
+        # print("output_smplx_scale:", self.smplx_scale)
+        # print("output_shift:", self.char_start[0])
+        # print("output_rotation:", self.R_scene_up_to_director_up)
+        # print("ouptut_director_trans:", generated_cam_traj_npy[0, :3, 3])
         
         for i, c2w in enumerate(generated_cam_traj_npy):
             R_c2w = self.R_scene_up_to_director_up.T @ c2w[:3, :3]
             t_c2w = (self.R_scene_up_to_director_up.T @ c2w[:3, 3] + self.char_start[0]) * self.smplx_scale
             R_w2c = R_c2w.T
             t_w2c = -R_c2w.T @ t_c2w
+            # if i == 0:
+            #     print("output_world_start_trans", t_c2w)
+            #     print("output_cam_space_trans", t_w2c)
             cam_param = {
                 "R": R_w2c.tolist(),
                 "t": t_w2c.tolist(),

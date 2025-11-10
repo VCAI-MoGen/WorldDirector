@@ -33,6 +33,8 @@ MeshRasterizer,
 TexturesVertex)
 from pytorch3d.transforms import matrix_to_axis_angle, axis_angle_to_matrix
 import sys
+from .director_controller import DirectorController
+sys.path.insert(0, os.path.join('../../../HSI/fitting', 'tools'))
 sys.path.insert(0, os.path.join('../../../HSI/fitting', 'main'))
 sys.path.insert(0, os.path.join('../../../HSI/fitting', 'common'))
 sys.path.insert(0, '../DIRECTOR')
@@ -46,15 +48,14 @@ from src.training.diffuser import Diffuser
 from remote_run_director import RemoteDirector
 from src.datasets.modalities.trajectory_dataset import TrajectoryDataset
 from utils.rotation_utils import compute_rotation_matrix_from_ortho6d
+from remote_run_director import encode_char_traj
+from remote_extract_masks_from_traj_video import remote_extract_video
 
 import itertools
 import torch.multiprocessing as mp
 from dataclasses import fields
 
 import os
-SEND_PATH = "/data1/cympyc1785/SCVideo/gs_render/tools/outfifo"
-RECV_PATH = "/data1/cympyc1785/SCVideo/gs_render/tools/infifo"
-SAVE_PATH = "/data1/cympyc1785/SCVideo/gs_render/tools/grads.pt"
 
 class ScPanel:
     def __init__(
@@ -133,8 +134,7 @@ class ScPanel:
         self._setup_refine_folder()
         self._setup_vis_folder()
 
-        self.diffuser_client = None
-        self.is_generating_cam_params = False
+        self.director_controller = DirectorController(self)
 
     def _setup_root_path(self):
         root_path_input = self.server.gui.add_text(
@@ -826,120 +826,18 @@ class ScPanel:
             )
             @generate_cam_params_with_scene_cfg_button.on_click
             def _(event: viser.GuiEvent) -> None:
-                if self.is_generating_cam_params:
-                    print("Already Generating")
-                    return
-                self.is_generating_cam_params = True
+                self.director_controller.generate_cam_params(event.client)
 
-                self.diffuser_client = event.client
-                start_time = time.time()
-                print("Remote Generating Cam Traj")
-                self.director = RemoteDirector()
-                self.director.diffuser.register_cfg_callback(self.get_scene_aware_grad)
-                self.get_matrix = self.director.diffuser.get_matrix
-
-                cam_start_pose = torch.tensor([
-                    [0, 0, 0],
-                    [0, 0, 0],
-                    [0, 0, 0],
-                ])
-
-                self.director.remote_run_director(camera_start_pose=cam_start_pose)
-                print("Remote Generating Done!")
-
-                self.is_generating_cam_params = False
-
-                print("It took", time.time() - start_time)
-            
-            grid_search_cam_params_with_scene_cfg_button = self.server.gui.add_button(
-                "Grid Search Cam Params with Scene",
-                color="red",
+            generate_cam_params_and_render_human_video_button = self.server.gui.add_button(
+                "Generate Cam Params and Render Human Video",
+                color="blue",
                 icon=viser.Icon.LIVE_PHOTO,
-                hint="Render images according to loaded camera params and optimize it with scene.",
+                hint="Generate cam params and render human video.",
             )
-            @grid_search_cam_params_with_scene_cfg_button.on_click
+            @generate_cam_params_and_render_human_video_button.on_click
             def _(event: viser.GuiEvent) -> None:
-                if self.is_generating_cam_params:
-                    print("Already Generating")
-                    return
-                self.is_generating_cam_params = True
-
-                self.diffuser_client = event.client
-                start_time = time.time()
-                print("Remote Generating Cam Traj")
-
-                param_ranges = {
-                    "roll_constraint":(0.0, 1.0, 11),
-                    "feat_reg_weight":(0.0, 1.0, 11),
-                    "grad_reg_weight":(0.0, 1.0, 11),
-                }
-
-                param_values = {
-                    name: torch.linspace(start, end, steps=steps)
-                    for name, (start, end, steps) in param_ranges.items()
-                }
-
-                keys = list(param_values.keys())
-                combinations = list(itertools.product(*param_values.values()))
-                
-                best_loss = torch.inf
-                best_params = None
-                
-                custom_root_path = os.path.join(self.root_path, "grid_search")
-                for combo in combinations:
-                    params = dict(zip(keys, combo))
-                    
-                    self.director = RemoteDirector()
-                    self.director.diffuser.register_cfg_callback(self.get_scene_aware_grad)
-
-                    comb_folder_name = ""
-                    for key, val in params.items():
-                        self.director.control_cfg.custom_guidance_ctrl[key] = val.item()
-
-                        comb_folder_name += f"_{key}" + f"_{val:.1f}"
-
-                    custom_data_path = os.path.join(custom_root_path, comb_folder_name)
-                    self.get_matrix = self.director.diffuser.get_matrix
-                    batch, padding_mask = self.director.remote_run_director(custom_data_path)
-                    
-                    loss = self.get_scene_aware_loss(batch["raw_gen_samples"], padding_mask)
-                    print(f"Params: {params}, Loss: {loss:.4f}")
-                    
-                    if best_loss > loss:
-                        best_loss = loss
-                        best_params = params
-
-
-                    cam_param_dir_path = os.path.join(custom_data_path, 'detailed', 'cam_params_scene')
-                    cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
-                    cameras = self.get_cameras_from_json(cam_params_path)
-                    
-                    # Render Video
-                    self.server.scene.set_global_visibility(False)
-                    image = self.render(cameras, render_mode="rgb") # (N, H, W, 3)
-                    self.server.scene.set_global_visibility(True)
-
-                    print("Converting to video...")
-                    scene_render_path = os.path.join(custom_data_path, 'detailed', 'scene_renders')
-                    for i in tqdm(range(len(cameras))):
-                        image_path = os.path.join(scene_render_path, f"{i}.png")
-                        imageio.imwrite(image_path, image[i])
-
-                    render_video_path = os.path.join(custom_data_path, 'scene_render_video.mp4')
-                    imageio.mimsave(render_video_path, image, fps=16)
-                    print(f"Video saved in {render_video_path}")
-
-                    self.update_camera(self.diffuser_client, cameras[0])
-
-                self.is_generating_cam_params = False
-                
-                print(f"\nBest Loss: {best_loss:.4f}")
-                print(f"Best Params: {best_params}")
-                
-                print("Remote Generating Done!")
-
-                print("It took", time.time() - start_time)
-
+                self.director_controller.generate_cam_params_and_video(event.client)
+            
     def _setup_refine_folder(self):
         with self.server.gui.add_folder("Refine"):
             load_cam_params_button = self.server.gui.add_button(
@@ -1583,7 +1481,7 @@ class ScPanel:
         self.renderer._set_output_type("rgb", output_type_info)
         return
 
-    def render(self, cameras: Cameras, render_mode="rgb", optimizable=False, update_client_cam=False):
+    def render(self, cameras: Cameras, render_mode="rgb", optimizable=False):
         available_outputs = self.renderer.renderer.get_available_outputs()
 
         output_type_info = available_outputs.get(render_mode, None)
@@ -1596,8 +1494,6 @@ class ScPanel:
         renders = []
         # print("Rendering...")
         for camera in cameras:
-            if update_client_cam:
-                self.update_camera(self.diffuser_client, camera)
             if render_mode == "rgb":
                 if optimizable:
                     render = self.renderer.get_outputs(camera.to_device("cuda")).permute(1, 2, 0) # (H, W, 3)
@@ -1665,7 +1561,6 @@ class ScPanel:
             outputs = [r.get() for r in results]
 
         print("Accelerated Rendering Done.")
-
 
     def optimize_cam_params(self, smplx_scale=None, smplx_up_vector=None, device="cuda:0"):
         data_type = self.current_data_type
@@ -2080,222 +1975,6 @@ class ScPanel:
         avg_dist = sum(dists_list) / len(dists_list)
         return avg_dist
 
-    def get_scene_aware_loss(self, cam_feat, batch_valid_mask):
-        device = cam_feat.device
-        dtype = cam_feat.dtype
-        
-        smplx_scale, smplx_up_vector = self.get_priors()
-        smplx_up_vector = torch.tensor(self.world_up_vector).to(smplx_up_vector)
-        
-        data_type = 'traj'
-
-        cameras = None
-        img = None
-        bbox_masks = None
-
-        maximum_mask_ratio = 0.3
-        minimum_mask_ratio = 0.15
-        camera_human_elevation_min_degree = 50.0
-        camera_human_elevation_max_degree = 60.0
-
-        roll_degree_range = 5.0
-        pixel_margin = 50.0
-
-        if smplx_up_vector is not None:
-            smplx_up_vector = torch.tensor(smplx_up_vector).to(device)
-
-        start_point = torch.tensor(self.start_point.value).to(device)
-        end_point = torch.tensor(self.end_point.value).to(device)
-
-        center_point = (start_point + end_point) / 2
-        path_vector = end_point - start_point
-        
-        # Get arbitrary point on plane
-        if self.world_up_vector is None:
-            vx, vy, vz = path_vector
-            x, y = 1.0, 0.0
-            if vz != 0:
-                z = -(vx*x + vy*y) / vz
-            else:
-                z = 1.0
-            up_vector = torch.tensor([x, y, z]).float().to(device)
-            up_vector = up_vector / torch.linalg.norm(up_vector)
-        else:
-            up_vector = torch.tensor(self.world_up_vector).float().to(device)
-            up_vector = up_vector / torch.linalg.norm(up_vector)
-            look_dir = torch.cross(path_vector, up_vector, dim=-1)
-            look_dir = look_dir / torch.linalg.norm(look_dir)
-
-        # Camera Space
-        rotation_matrix, trans = traj_feat_to_camera_space_matrix(
-                                        cam_feat,
-                                        self.get_matrix,
-                                        self.director.R_scene_up_to_director_up,
-                                        self.director.char_start,
-                                        smplx_scale,
-                                    )
-        
-        R_batch = rotation_matrix.to(device)
-        t_batch = trans.to(device)
-        K = torch.tensor(self.get_K(np.radians(75), self.render_wh), device=device).float()
-
-        batch_cameras = build_cameras(R_batch, t_batch, K)
-
-        # cond_sample 받아와서 decoding하는건 비효율적이라 raw data 가져옴
-        points_world = torch.tensor(self.director.raw_char_traj, device=device, dtype=dtype) # (N, 3)
-
-        batch_losses = []
-        ctrl = self.director.control_cfg.custom_guidance_ctrl
-        for full_cams, valid_mask, R, t in zip(batch_cameras, batch_valid_mask, R_batch, t_batch):
-            N = valid_mask.sum().int().item()
-            batch_loss = torch.tensor(0, device=device, dtype=dtype, requires_grad=True)
-            loss_info = {}
-
-            valid_mask = valid_mask.bool() # (N)
-            cameras = [full_cams[i] for i in range(N)] # (N)
-
-            R = R[valid_mask] # (N, 3, 3)
-            t = t[valid_mask] # (N, 3)
-            fx = torch.tensor([cam.fx for cam in cameras])
-            fy = torch.tensor([cam.fy for cam in cameras])
-            cx = torch.tensor([cam.cx for cam in cameras])
-            cy = torch.tensor([cam.cy for cam in cameras])
-            width = torch.tensor([cam.width for cam in cameras])
-            height = torch.tensor([cam.height for cam in cameras])
-
-            if ctrl.cam_over_point is not None and ctrl.cam_over_point > 0.0:
-                # 지금은 batch 하나라서 여기서 하고 batch로 하려면 밖에서 padding해서 사용
-                points_to_camera = t - points_world # (N, 3)
-                points_to_camera = points_to_camera / torch.norm(points_to_camera, dim=-1, keepdim=True)
-                loss_camera_over_points =  ctrl.cam_over_point * margin_range_loss(torch.sum(points_to_camera * smplx_up_vector.unsqueeze(0), dim=-1), \
-                                                                    lower=torch.cos(torch.deg2rad(torch.tensor(camera_human_elevation_max_degree))).to(device), \
-                                                                    upper=torch.cos(torch.deg2rad(torch.tensor(camera_human_elevation_min_degree))).to(device), \
-                                                                    margin=0).mean()
-                batch_loss += loss_camera_over_points
-
-                loss_info["loss_camera_over_points"] = f"{loss_camera_over_points.item():.2f}"
-
-            if (ctrl.mask_in_image is not None or ctrl.mask_area is not None or ctrl.mask_depth is not None) and \
-                (ctrl.mask_in_image > 0.0 or ctrl.mask_area > 0.0 or ctrl.mask_depth > 0.0):
-
-                scene_depth = self.render(cameras, render_mode='exp_depth', optimizable=True) # (N, H, W)
-
-                focal_batch = torch.stack((fx, fy), dim=-1)
-                princpt_batch = torch.stack((cx, cy), dim=-1)
-                img = self.render(cameras, render_mode="rgb", optimizable=True, update_client_cam=True) * 255
-
-                _, human_depths, human_masks, bb = self.render_smplx_at_3d_position(points_world, R, t, focal_batch, princpt_batch, img, smplx_scale, smplx_up_vector)
-
-                # human mask filtering
-                target_depth = scene_depth.unsqueeze(-1)
-                target_depth[human_masks <= 0] = 0
-                human_depths[human_masks <= 0] = 0
-
-                total_pixel = width * height
-
-                # bb_widths = (bb[:, 2].clamp(0, width[0]) - bb[:, 0].clamp(0, width[0]))
-                # bb_heights = (bb[:, 3].clamp(0, height[0]) - bb[:, 1].clamp(0, height[0]))
-                # bb_areas = (bb_widths * bb_heights).unsqueeze(-1)
-
-                # human mask visible filter
-                in_frame_threshold = 0 # 이론상 최대 면적의 몇퍼센트 만들어야함
-                human_mask_in_frame = (human_masks[:, :, :, 0] > 0).sum(dim=(-1, -2)) > in_frame_threshold # (N)
-
-                print("Visible Frame :", human_mask_in_frame.sum())
-
-                # angles between points to camera vec and human up vec >= thresh
-                loss_human_mask_in_image = ctrl.mask_in_image * scaled_margin_range_loss(bb, \
-                                                                lower=torch.zeros((N, 4)).to(device), \
-                                                                upper=torch.stack([width, height, width, height], dim=-1).to(device), \
-                                                                margin=0)[human_mask_in_frame].mean()
-                # loss_human_mask_area = ctrl.mask_area * scaled_margin_range_loss(bb_areas, \
-                #                                             lower=torch.stack([total_pixel * minimum_mask_ratio]).to(device), \
-                #                                             upper=torch.stack([total_pixel * maximum_mask_ratio]).to(device), \
-                #                                             margin=0.0)[human_mask_in_frame].mean()
-                loss_human_mask_visible = ctrl.mask_depth * scaled_margin_range_loss(human_depths, \
-                                                                lower=torch.zeros(human_depths.shape).to(device), \
-                                                                upper=target_depth, \
-                                                                margin=0.0)[human_mask_in_frame].mean()
-
-                batch_loss += loss_human_mask_in_image
-                # batch_loss += loss_human_mask_area
-                batch_loss += loss_human_mask_visible
-
-                loss_info["loss_human_mask_in_image"] = f"{loss_human_mask_in_image.item():.2f}"
-                # loss_info["loss_human_mask_area"] = f"{loss_human_mask_area.item():.2f}"
-                loss_info["loss_human_mask_visible"] = f"{loss_human_mask_visible.item():.5f}"
-
-            if ctrl.roll_constraint is not None and ctrl.roll_constraint > 0.0:
-            
-                _, angles = roll_axis_and_angle(R, up_vector, True)
-                loss_roll_constraint = ctrl.roll_constraint * margin_range_loss(angles, \
-                                                                lower=torch.deg2rad(torch.zeros_like(angles)).to(device),\
-                                                                upper=torch.deg2rad(torch.zeros_like(angles)).to(device),\
-                                                                margin=0.0).mean()
-
-                # loss_roll_jitter_constraint = ctrl.roll_jitter * roll_accel_l2_loss(angles).mean()
-            
-                batch_loss += loss_roll_constraint
-                # batch_loss += loss_roll_jitter_constraint
-
-                loss_info["loss_roll_constraint"] = f"{loss_roll_constraint.item():.2f}"
-                # loss_info["loss_roll_jitter_constraint"] = f"{loss_roll_jitter_constraint.item():.2f}"
-
-            batch_losses.append(batch_loss)
-            print(loss_info)
-
-        total_loss = torch.stack(batch_losses) # batch independent loss
-
-        return total_loss
-
-    def get_scene_aware_grad(self, cam_feat, batch_valid_mask):
-        """
-        cam_feat : (B, P, T) - P : 6d + 3t = 9
-        """
-        cam_feat_copy = cam_feat.detach().clone().requires_grad_(True)
-
-        total_loss = self.get_scene_aware_loss(cam_feat_copy, batch_valid_mask)
-        print("Loss :", total_loss)
-        grad = torch.autograd.grad(total_loss, cam_feat_copy, create_graph=False)[0]
-
-        self.set_rgb_render_mode()
-
-        # ===== Visualize One Batch =====
-        # ctrl = self.director.control_cfg.custom_guidance_ctrl
-        # if ctrl.debug:
-        #     next_cam_feat = cam_feat_copy - 1.0 * grad
-
-        #     R_batch_next, t_batch_next = traj_feat_to_camera_space_matrix(next_cam_feat.to(device),
-        #                                             self.get_matrix,
-        #                                             self.director.R_scene_up_to_director_up,
-        #                                             self.director.char_start,
-        #                                             smplx_scale)
-            
-        #     next_cameras = build_cameras(R_batch_next, t_batch_next, K)
-
-        #     _, angles = roll_axis_and_angle(R_batch[0], up_vector, True)
-        #     _, next_angles = roll_axis_and_angle(R_batch_next[0], up_vector, True)
-
-        #     for angle, next_angle, camera, next_camera, g in zip(angles, next_angles, batch_cameras[0], next_cameras[0], grad[0].transpose(-1, -2)):
-        #         print("Roll Angle :", angle, next_angle)
-        #         print("Grad-6d :", g)
-        #         print("Grad-3x3mat :")
-        #         print(compute_rotation_matrix_from_ortho6d(g.unsqueeze(0)))
-
-        #         while True:
-        #             self.update_camera(self.diffuser_client, camera)
-        #             control = input("press any button to see updated scene")
-        #             self.update_camera(self.diffuser_client, next_camera)
-        #             control = input("look again? (y/n)")
-        #             if control != "y":
-        #                 break
-
-        # print("Grad :", grad)
-        # print("Grad Mean :", grad.mean())
-        # print("Grad Min/Max :", grad.min(), grad.max())
-        # print("Grad Max Abs Indices (top-5) :", grad.abs().topk(5).indices) # P 값마다 전 frame에 걸쳐 5위이내
-
-        return grad
 
 def decode_char_traj(char_dataset, char_feat):
     """
@@ -2595,125 +2274,6 @@ def fit_plane_ransac(points, threshold=0.01, min_inliers=100):
     
     inlier_mask = ransac.inlier_mask_
     return normal, inlier_mask
-
-def roll_axis_and_angle(R, world_up=None, w2c=False, eps=1e-8):
-    """
-    Input:
-        R: (N,3,3) rotation matrices (camera→world)
-        world_up: (3,), default [0,1,0]
-        w2c: True if R is world→camera (it will be transposed inside)
-    Output:
-        roll_axis: (N,3)
-        roll_angle: (N,) [radians]
-    """
-    if world_up is None:
-        world_up = torch.tensor([0., 1., 0.], device=R.device, dtype=R.dtype)
-    if w2c:
-        R = R.transpose(1, 2)  # convert to camera→world
-
-    cam_right   = R[:, :, 0]
-    cam_up      = -R[:, :, 1] # viser camera up vector is -Y
-    cam_forward = R[:, :, 2]  # roll axis
-
-    def normalize(v):
-        return v / (v.norm(dim=-1, keepdim=True).clamp_min(eps))
-    
-    def dot(a, b, keepdim=True):
-        return (a * b).sum(-1, keepdim=keepdim) # (N, 1)
-
-    roll_axis = normalize(cam_forward)  # roll axis
-
-    x_ref = torch.cross(roll_axis, world_up.expand_as(roll_axis), dim=-1)
-    bad = x_ref.norm(dim=-1, keepdim=False) < 1e-6 # roll_axis, world_up이 비슷해지면 roll 정의 불가
-    x_ref = normalize(x_ref)
-    y_ref = normalize(torch.cross(x_ref, roll_axis, dim=-1))
-
-    # signed angle
-    cos_ = dot(y_ref, cam_up, keepdim=False)
-    sin_ = dot(x_ref, cam_up, keepdim=False)
-    theta = torch.atan2(sin_, cos_)
-    theta = theta.masked_fill(bad, float('nan'))
-
-    return roll_axis, theta
-
-def roll_smooth_l1_loss(angles, beta=torch.deg2rad(torch.tensor(0.001))):
-    diff = angles[1:] - angles[:-1]
-    diff = (diff + torch.pi) % (2*torch.pi) - torch.pi
-    abs_diff = torch.abs(diff)
-    loss = torch.where(abs_diff < beta, 0.5 * abs_diff**2 / beta, abs_diff - 0.5 * beta)
-    return loss.mean()
-
-def roll_accel_l2_loss(angles):
-    """
-    Smooth L2 Acceleration Loss (연속 프레임 2차 차분)
-    """
-    diff1 = angles[1:] - angles[:-1]
-    diff2 = diff1[1:] - diff1[:-1]
-    diff2 = (diff2 + torch.pi) % (2*torch.pi) - torch.pi  # unwrap
-    return (diff2 ** 2).mean()
-
-def accel_l2_loss(feat):
-    diff1 = feat[1:]
-
-def one_step_ahead_reg_loss(batch_feat):
-    pass
-
-
-def traj_feat_to_camera_space_matrix(batch_feat, get_matrix, R_scene_up_to_director_up, char_start, smplx_scale):
-    """
-    Input:
-        feat: (B, P, T)
-    """
-    # Latent Space to Traj Space
-    batch_matrix = torch.stack([get_matrix(feat) for feat in batch_feat]) # (B, T, 4, 4)
-    batch_R = batch_matrix[:, :, :3, :3] # (B, T, 3, 3)
-    batch_t = batch_matrix[:, :, :3, 3:4] # (B, T, 3, 1)
-
-    R_scene_up_to_director_up = torch.tensor(R_scene_up_to_director_up, device=batch_feat.device, dtype=batch_feat.dtype)
-    char_start = torch.tensor(char_start, device=batch_feat.device, dtype=batch_feat.dtype)
-
-    # Traj Space to Scene World Space
-    R_c2w = R_scene_up_to_director_up.T @ batch_R
-    t_c2w = (R_scene_up_to_director_up.T @ batch_t + char_start.unsqueeze(-1)) * smplx_scale
-
-    # Scene World Space to Camera Space
-    R_w2c = R_c2w.transpose(-1, -2) # (B, T, 3, 3)
-    t_w2c = (-R_c2w.transpose(-1, -2) @ t_c2w.float()).squeeze(-1) # (B, T, 3)
-
-    return R_w2c, t_w2c
-
-def build_cameras(R_batch, t_batch, K):
-    B, T, _, _ = R_batch.shape
-    device = R_batch.device
-
-    fx_batch = K[0][0][None].repeat(B, T)
-    fy_batch = K[1][1][None].repeat(B, T)
-    cx = K[0][2][None].float()
-    cy = K[1][2][None].float()
-    width_batch = torch.tensor(int(cx * 2), device=device, dtype=torch.int)[None].repeat(B, T)
-    height_batch = torch.tensor(int(cy * 2), device=device, dtype=torch.int)[None].repeat(B, T)
-    appearance_id_batch = torch.zeros(1, device=device, dtype=torch.int).repeat(B, T)
-    normalized_appearance_id_batch = torch.zeros(1, device=device, dtype=torch.int).repeat(B, T)
-    distortion_params_batch = torch.zeros((1, 4), device=device, dtype=torch.int).repeat(B, T, 1)
-    camera_type_batch = torch.zeros(1, device=device, dtype=torch.int).repeat(B, T)
-    cx_batch, cy_batch = cx.repeat(B, T), cy.repeat(B, T)
-
-    batch_cameras = BatchCameras(
-        R=R_batch,
-        T=t_batch,
-        fx=fx_batch,
-        fy=fy_batch,
-        cx=cx_batch,
-        cy=cy_batch,
-        width=width_batch,
-        height=height_batch,
-        appearance_id=appearance_id_batch,
-        normalized_appearance_id=normalized_appearance_id_batch,
-        distortion_params=distortion_params_batch,
-        camera_type=camera_type_batch
-    )
-
-    return batch_cameras
 
 
 def iterative_ransac_planes(points, ref_point, threshold=0.1, min_inliers=100, max_planes=1):

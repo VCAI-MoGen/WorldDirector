@@ -70,6 +70,22 @@ class Camera:
     def device(self):
         return self.R.device
 
+@dataclass
+class CamerasInterface:
+    R: Tensor  # [n_cameras, 3, 3]
+    T: Tensor  # [n_cameras, 3]
+    fx: Tensor  # [n_cameras]
+    fy: Tensor  # [n_cameras]
+    fov_x: Tensor = field(init=False)  # [n_cameras]
+    fov_y: Tensor = field(init=False)  # [n_cameras]
+    cx: Tensor  # [n_cameras]
+    cy: Tensor  # [n_cameras]
+    width: Tensor  # [n_cameras]
+    height: Tensor  # [n_cameras]
+    appearance_id: Tensor  # [n_cameras]
+    normalized_appearance_id: Optional[Tensor]  # [n_cameras]
+    distortion_params: Optional[Union[Tensor, list[Tensor]]]
+    camera_type: Tensor  # Int[n_cameras]
 
 @dataclass
 class Cameras:
@@ -205,3 +221,59 @@ class Cameras:
     def __iter__(self):
         for i in range(len(self)):
             yield self[i]
+
+@dataclass
+class BatchCameras:
+    """
+    Batch of Cameras
+
+    Y down, Z forward
+    world-to-camera
+    """
+
+    R: Tensor  # [B, n_cameras, 3, 3]
+    T: Tensor  # [B, n_cameras, 3]
+    fx: Tensor  # [B, n_cameras]
+    fy: Tensor  # [B, n_cameras]
+    cx: Tensor  # [B, n_cameras]
+    cy: Tensor  # [B, n_cameras]
+    width: Tensor  # [B, n_cameras]
+    height: Tensor  # [B, n_cameras]
+    appearance_id: Tensor  # [B, n_cameras]
+    normalized_appearance_id: Optional[Tensor]  # [B, n_cameras]
+
+    distortion_params: Optional[Union[Tensor, list[Tensor]]]
+    """
+    NOTE: this should be None or zero tensors currently
+
+    For perspective: (k1,k2,p1,p2[,k3[,k4,k5,k6[,s1,s2,s3,s4[,τx,τy]]]]) of 4, 5, 8, 12 or 14 elements
+    For fisheye: (k1, k2, k3, k4)
+    """
+
+    camera_type: Tensor  # Int[B, n_cameras]
+
+    def __len__(self):
+        return self.R.shape[0]
+
+    def __getitem__(self, index) -> Cameras:
+        return Cameras(
+            R=self.R[index],
+            T=self.T[index],
+            fx=self.fx[index],
+            fy=self.fy[index],
+            cx=self.cx[index],
+            cy=self.cy[index],
+            width=self.width[index],
+            height=self.height[index],
+            appearance_id=self.appearance_id[index],
+            normalized_appearance_id=self.normalized_appearance_id[index],
+            distortion_params=self.distortion_params[index],
+            camera_type=self.camera_type[index],
+        )
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+
+

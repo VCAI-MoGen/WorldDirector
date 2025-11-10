@@ -28,7 +28,7 @@ ema_kwargs:
 
 # Sampling
 sampling_kwargs:
-  num_steps: 10
+  num_steps: 50
   sigma_min: 0.002
   sigma_max: 80
   rho: 40

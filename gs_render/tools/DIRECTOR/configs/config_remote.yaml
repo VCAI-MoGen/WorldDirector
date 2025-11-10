@@ -17,6 +17,13 @@ log_dir: ${results_dir}/${xp_name}/${timestamp}
 # checkpoint_path:  ./checkpoints_train/1025_S_T_V_T_AF_F_Evalnorm_train/epoch=449.ckpt # smoothing only
 # checkpoint_path: ./custom_checkpoints/before_standardization/smoothing_n_depth_filtered_epoch=419.ckpt # smoothing + depth filtered
 checkpoint_path: ./custom_checkpoints/smoothing_n_depth_filtered_epoch=449.ckpt # smoothing + depth filtered + stat
+# checkpoint_path: /data1/danielk0112/camera_gen/checkpoints_train/1109_ET_zero_caption/epoch=449.ckpt
+
+
+# checkpoint_path: /data1/danielk0112/camera_gen/checkpoints_train/1106_S_T_V_T_AF_F_ET_Pulp_combined_2/epoch=299.ckpt
+# checkpoint_path: /data1/danielk0112/camera_gen/checkpoints_train/1107_ET_Pulp_combined_zero_caption/epoch=299.ckpt
+# checkpoint_path: /data1/danielk0112/camera_gen/checkpoints_train/1108_ET_Pulp_combined_zero_caption_renew/epoch=299.ckpt
+# checkpoint_path: /data1/danielk0112/camera_gen/checkpoints_train/1109_ET_Pulp_combined_full_caption_renew/epoch=239.ckpt
 
 seed: 42
 save_and_sample_every: 10
@@ -30,18 +37,33 @@ hydra:
 
 # Added for control
 guidance_control:
-  root_path: "/data1/cympyc1785/SCVideo/data/office0_demo2"
+  root_path: "/data1/cympyc1785/SCVideo/data/office3_demo"
+  video_name_prefix: "random_seed"
   prompt: ""
+  random_seed: true
   custom_guidance_weight: 1.0
-  cfg_num_step: 2
-  post_guidance_num_steps: 0
+  cfg_num_step: 5 # for rendering loss
+  post_guidance_num_steps: 0 # don't use
+  roll_replace_num_steps: 1
+  reg_num_steps: 50
+  start_pose_replace: true
+  end_pose_replace: true
+  guidance_scaling_type: "cosine" # linear와 비교 필요
+  visualize_input_frame: true
+  visualize_output: false
   custom_guidance_ctrl:
-    roll_constraint: 0.3
-    cam_over_point: null
-    mask_in_image: null
-    mask_area: null # 일단 봉쇄
-    mask_depth: null
-    feat_reg_weight: 0.5
-    grad_reg_weight: 0.5
-    debug: false
+    end_pose_weight: 15
+    look_target: 10
+    head_look_camera: 0
+    look_distance: 8
+    look_threshold: 1
+    head_threshold: 1
+    dist_threshold: 4
+    cam_position_constraint: null # for upper body based first frame camera pose prior
+    roll_constraint: null # replaced with roll hard replace
+    cam_over_point: null 
+    mask_in_image: null # discarded (guidance contained in look_target)
+    mask_depth: 5 # SCENE GUIDANCE
+    feat_reg_weight: 50 # urgent use only
+    debug: false # view cfg steps
   
