@@ -38,7 +38,7 @@ for img_path in img_path_list:
         if (result != 0):
             print('something bad happened when removing unnecessary frames. terminate the script.')
             sys.exit()
-"""
+
 # make camera parameters
 os.chdir('./vggt')
 cmd = 'python run_vggt.py --root_path ' + root_path
@@ -111,7 +111,7 @@ if (result != 0):
     print('something bad happened when fitting. terminate the script.')
     sys.exit()
 os.chdir('../tools')
-"""
+
 # fit SMPLX
 os.chdir('../main')
 cmd = 'python fit.py --root_path ' + root_path

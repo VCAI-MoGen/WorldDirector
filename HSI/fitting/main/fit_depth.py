@@ -15,7 +15,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root_path', type=str, dest='root_path')
     parser.add_argument('--learning_rate', type=float, default=1e-1)
-    parser.add_argument('--step_size', type=int, default=3000)
+    parser.add_argument('--step_size', type=int, default=1000)
     args = parser.parse_args()
     assert args.root_path, "Please set root_path."
     return args
@@ -27,8 +27,6 @@ step_size = args.step_size
 depth_path = os.path.join(root_path, 'depths_vggt')
 mask_path = os.path.join(root_path, 'depths')
 scene_depth_path = os.path.join(root_path, 'depths_scene')
-scene_confidence_path = os.path.join(root_path, 'scene_confidence')
-conf_thresh = 0.01
 
 device = "cuda:0"
 
@@ -46,34 +44,6 @@ scene_depths = torch.from_numpy(
     np.stack([
     cv2.resize(np.load(os.path.join(scene_depth_path, f'{i}.npy'))[:, :, 0], (masks.shape[2], masks.shape[1])) for i in range(len(os.listdir(scene_depth_path)))
 ])).to(device) # (N, H, W)
-
-scene_confs = torch.from_numpy(
-    np.stack([
-    cv2.resize(np.load(os.path.join(scene_confidence_path, f'{i}.npy'))[:, :, 0], (masks.shape[2], masks.shape[1])) for i in range(len(os.listdir(scene_confidence_path)))
-])).to(device) # (N, H, W)
-
-# Remove depth outliers
-
-top_k_mask = torch.zeros_like(scene_depths, dtype=torch.bool)
-for i in range(scene_depths.shape[0]):
-    k = int(scene_depths[i].numel() * 0.2)
-    threshold = torch.topk(scene_depths[i].flatten(), k).values.min()
-    top_k_mask[i] |= scene_depths[i] >= threshold
-for i in range(depths.shape[0]):
-    k = int(depths[i].numel() * 0.2)
-    threshold = torch.topk(depths[i].flatten(), k).values.min()
-    top_k_mask[i] |= depths[i] >= threshold
-masks = top_k_mask | masks
-
-low_conf_mask = torch.zeros_like(scene_confs, dtype=torch.bool)
-for i in range(scene_confs.shape[0]):
-    low_conf_mask[i] = scene_confs[i] <= conf_thresh
-masks = low_conf_mask | masks
-
-low_depth_mask = torch.zeros_like(scene_depths, dtype=torch.bool)
-for i in range(scene_depths.shape[0]):
-    low_depth_mask[i] = scene_depths[i] <= 0
-masks = low_depth_mask | masks
 
 print("Max scene depth:", scene_depths.max())
 print("Min scene depth:", scene_depths.min())
@@ -171,31 +141,8 @@ def pc_world_to_depth(points_world, cam_param, w2c=True, device='cuda:0'):
     return depth_map
 
 if 'detailed' not in root_path:
-    s = torch.tensor(1.0, device=device, requires_grad=True)
-    t = torch.tensor(0.0, device=device, requires_grad=True)
-
-    optimizer = optim.Adam([s, t], lr=lr)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1000, gamma=0.5)
-
-    pbar = trange(step_size, desc="Training", dynamic_ncols=True)
-    for step in pbar:
-        optimizer.zero_grad()
-
-        pred = depths * s + t
-        pred = torch.clamp(pred, min=1e-3)
-        loss = (((pred - scene_depths)**2)[~masks]).mean()
-
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-        if step == 0:
-            print("Initial Loss:", loss.item())
-
-        pbar.set_postfix(loss=f"{loss.item():.6f}", scale=f"{s.item():.6f}", shift=f"{t.item():.6f}")
-else:
-    N = scene_depths.shape[0]
-    s = torch.ones((N, 1, 1), device=device, requires_grad=True)
-    t = torch.zeros((N, 1, 1), device=device, requires_grad=True)
+    s = torch.tensor(1.0, requires_grad=True)
+    t = torch.tensor(0.0, requires_grad=True)
 
     optimizer = optim.Adam([s, t], lr=lr)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=250, gamma=0.5)
@@ -214,8 +161,8 @@ else:
         if step == 0:
             print("Initial Loss:", loss.item())
 
-        pbar.set_postfix(loss=f"{loss.item():.6f}")
-"""
+        pbar.set_postfix(loss=f"{loss.item():.6f}", scale=f"{s.item():.6f}", shift=f"{t.item():.6f}")
+
 else:
     cam_params_dir = os.path.join(root_path, 'cam_params')
     cam_params_scene_dir = os.path.join(root_path, 'cam_params_scene')
@@ -274,7 +221,7 @@ else:
         depth = pc_world_to_depth(pred_pc, cam_param_scene, w2c=True, device=device)
         pred.append(depth)
     pred = torch.stack(pred)
-"""
+
 print('prediction (max/min):', pred.max(), pred.min())
 print('pseudo depth (max/min):', depths.max(), depths.min())
 print('gt depth (max/min):', scene_depths.max(), scene_depths.min())
@@ -321,13 +268,10 @@ print(f"Save visualization in {save_path}")
 
 optimized_depth_dir = os.path.join(root_path, 'depths_vggt_optimized')
 os.makedirs(optimized_depth_dir, exist_ok=True)
-optimized_depth_vis_dir = os.path.join(root_path, 'depths_vggt_optimized_vis')
-os.makedirs(optimized_depth_vis_dir, exist_ok=True)
 
+H, W = np.load(os.path.join(depth_path, '0.npy')).shape
 for i in range(optimized_depths.shape[0]):
+    # depth = cv2.resize(optimized_depths[i], (W, H))
     np.save(os.path.join(optimized_depth_dir, f'{i}.npy'), optimized_depths[i])
-    optimized_depth_norm = (optimized_depths[i] - optimized_depths[i].min()) / (optimized_depths[i].max() - optimized_depths.min())
-    optimized_depth_vis = (optimized_depth_norm * 255).astype(np.uint8)
-    cv2.imwrite(os.path.join(optimized_depth_vis_dir, f'{i}.png'), optimized_depth_vis[:, :, None].repeat(3, axis=2))
 
 print(f"Save optimized_depth in {optimized_depth_dir}")
