@@ -61,6 +61,7 @@ class GSplatV1RendererModule(Renderer):
     _HARD_INVERSE_DEPTH_REQUIRED = 1 << 8
     _DEPTH_ALTERNATIVE = 1 << 9
     _NORMAL_REQUIRED = 1 << 10
+    _N_CONTRIBS_REQUIRED = 1 << 11
 
     RENDER_TYPE_BITS = {
         "rgb": _RGB_REQUIRED,
@@ -74,6 +75,7 @@ class GSplatV1RendererModule(Renderer):
         "hard_inverse_depth": _HARD_INVERSE_DEPTH_REQUIRED,
         "inv_depth_alt": _DEPTH_ALTERNATIVE,
         "normal": _NORMAL_REQUIRED,
+        "n_contribs": _RGB_REQUIRED | _N_CONTRIBS_REQUIRED
     }
 
     def __init__(self, config: GSplatV1Renderer):
@@ -182,8 +184,8 @@ class GSplatV1RendererModule(Renderer):
         means2d = means2d.squeeze(0)
         projection_for_rasterization = radii, means2d, depths, conics, compensations
 
-        def rasterize(input_features: torch.Tensor, background, return_alpha: bool = False):
-            rendered_colors, rendered_alphas = GSplatV1.rasterize(
+        def rasterize(input_features: torch.Tensor, background, return_alpha: bool = False, return_n_contribs: bool = False):
+            rendered_colors, rendered_alphas, n_contribs = GSplatV1.rasterize(
                 preprocessed_camera,
                 projection_for_rasterization,
                 isects,
@@ -193,8 +195,13 @@ class GSplatV1RendererModule(Renderer):
                 tile_size=self.config.block_size,
             )
 
-            if return_alpha:
+            if return_alpha and return_n_contribs:
+                return rendered_colors, rendered_alphas.squeeze(0).squeeze(-1), n_contribs
+            elif return_alpha:
                 return rendered_colors, rendered_alphas.squeeze(0).squeeze(-1)
+            elif return_n_contribs:
+                return rendered_colors, n_contribs
+            
             return rendered_colors
 
         outputs = {
@@ -209,6 +216,7 @@ class GSplatV1RendererModule(Renderer):
             "hard_inverse_depth": None,
             "normal": None,
             "inv_depth_alt": None,
+            "n_contribs": None,
             "viewspace_points": means2d,
             "viewspace_points_grad_scale": 0.5 * torch.tensor([preprocessed_camera[-1]]).to(means2d).clamp_(max=self.config.max_viewspace_grad_scale),
             "visibility_filter": visibility_filter,
@@ -271,11 +279,22 @@ class GSplatV1RendererModule(Renderer):
             else:
                 input_features = torch.concat(input_feature_list, dim=-1)
                 input_bg_colors = torch.concat(bg_color_list, dim=-1)
-            render_features, render_alpha = rasterize(
-                input_features,
-                background=input_bg_colors,
-                return_alpha=True,
-            )
+            if self.is_type_required(render_type_bits, self._N_CONTRIBS_REQUIRED):
+                render_features, render_alpha, render_n_contribs = rasterize(
+                    input_features,
+                    background=input_bg_colors,
+                    return_alpha=True,
+                    return_n_contribs=True
+                )
+                render_n_contribs = render_n_contribs.unsqueeze(0)
+                outputs["n_contribs"] = render_n_contribs
+
+            else:
+                render_features, render_alpha = rasterize(
+                    input_features,
+                    background=input_bg_colors,
+                    return_alpha=True,
+                )
             render_features = render_features.permute(2, 0, 1)
             render_alpha = render_alpha.unsqueeze(0)
 
@@ -361,6 +380,7 @@ class GSplatV1RendererModule(Renderer):
             "hard_inverse_depth": RendererOutputInfo("hard_inverse_depth", type=RendererOutputTypes.GRAY),
             "normal": RendererOutputInfo("normal", type=RendererOutputTypes.NORMAL_MAP),
             # "inv_depth_alt": RendererOutputInfo("inv_depth_alt", type=RendererOutputTypes.GRAY),
+            "n_contribs": RendererOutputInfo("n_contribs", type=RendererOutputTypes.GRAY)
         }
 
 
@@ -582,7 +602,7 @@ class GSplatV1:
         colors = colors.unsqueeze(0)
         background = background.unsqueeze(0)
 
-        rendered_colors, rendered_alphas = rasterize_to_pixels(
+        rendered_colors, rendered_alphas, n_contribs = rasterize_to_pixels(
             means2d=means2d,
             conics=conics,
             colors=colors,
@@ -597,7 +617,7 @@ class GSplatV1:
             **kwargs,
         )
 
-        return rendered_colors.squeeze(0), rendered_alphas.squeeze(0)
+        return rendered_colors.squeeze(0), rendered_alphas.squeeze(0), n_contribs.squeeze(0)
 
     @staticmethod
     def get_intrinsics_matrix(fx, fy, cx, cy, device):

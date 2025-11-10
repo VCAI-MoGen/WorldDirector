@@ -20,12 +20,13 @@ import torch.cuda.amp as amp
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from tqdm import tqdm
+import copy
 
 from wan.text2video import (WanT2V, T5EncoderModel, WanVAE, shard_model, FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps, FlowUniPCMultistepScheduler)
 from .modules.model import VaceWanModel
 from ..utils.preprocessor import VaceVideoProcessor
-
+from wan.utils.utils import cache_video, cache_image, str2bool
 
 class WanVace(WanT2V):
     def __init__(
@@ -124,7 +125,7 @@ class WanVace(WanT2V):
             seq_len=32760,
             keep_last=True)
 
-    def vace_encode_frames(self, frames, ref_images, masks=None, vae=None):
+    def vace_encode_frames(self, frames, ref_images, masks=None, vae=None, mean=False):
         vae = self.vae if vae is None else vae
         if ref_images is None:
             ref_images = [None] * len(frames)
@@ -140,6 +141,8 @@ class WanVace(WanT2V):
             inactive = vae.encode(inactive)
             reactive = vae.encode(reactive)
             latents = [torch.cat((u, c), dim=0) for u, c in zip(inactive, reactive)]
+        if mean:
+            latents = [torch.zeros(latent.shape, dtype=latent.dtype, device=latent.device) for latent in latents]
 
         cat_latents = []
         for latent, refs in zip(latents, ref_images):
@@ -187,6 +190,33 @@ class WanVace(WanT2V):
                 mask = torch.cat((mask_pad, mask), dim=1)
             result_masks.append(mask)
         return result_masks
+    
+    def vace_encode_confidences(self, confidences, ref_images=None, vae_stride=None):
+        vae_stride = self.vae_stride if vae_stride is None else vae_stride
+        if ref_images is None:
+            ref_images = [None] * len(confidences)
+        else:
+            assert len(confidences) == len(ref_images)
+
+        result_confidences = []
+        for confidence, refs in zip(confidences, ref_images):
+            c, depth, height, width = confidence.shape
+            new_depth = int((depth + 3) // vae_stride[0])
+            height = 2 * (int(height) // (vae_stride[1] * 2))
+            width = 2 * (int(width) // (vae_stride[2] * 2))
+
+            # interpolation
+            confidence = F.interpolate(confidence.unsqueeze(0), size=(new_depth, height, width), mode='trilinear').squeeze(0)
+
+            # Renormalization
+            confidence = (confidence - confidence.min()) / (confidence.max() - confidence.min())
+
+            if refs is not None:
+                length = len(refs)
+                confidence_pad = torch.ones_like(confidence[:, :length, :, :])
+                confidence = torch.cat((confidence_pad, confidence), dim=1)
+            result_confidences.append(confidence)
+        return result_confidences
 
     def vace_latent(self, z, m):
         return [torch.cat([zz, mm], dim=0) for zz, mm in zip(z, m)]
@@ -315,7 +345,11 @@ class WanVace(WanT2V):
                  n_prompt="",
                  seed=-1,
                  offload_model=True,
-                 scene_frames=None):
+                 # VCAI #
+                 scene_frames=None,
+                 confidence_map=None, # (1, N, H, W),
+                 enhance_scene=False
+                 ):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -380,14 +414,10 @@ class WanVace(WanT2V):
         tokenized = tokenizer([input_prompt], add_special_tokens=True)
         tokens = [tokenizer.tokenizer.convert_ids_to_tokens(ids, skip_special_tokens=False) for ids in tokenized]
 
-        for i, (text, tok) in enumerate(zip([input_prompt], tokens)):
-            print(f"Original: {text}")
-            for idx, element in enumerate(tok):
-                if element == '<pad>':
-                    break
-                print(f"{idx}: {element}")
-        human_text_idx = tokens[0].index('▁man')
-        print('human_text_idx:', human_text_idx)
+        gray_frames = [torch.ones(input_frames[0].shape, device=input_frames[0].device) * -0.0118]
+        white_masks = [torch.ones(input_masks[0].shape, device=input_masks[0].device)]
+        black_masks = [torch.zeros(input_masks[0].shape, device=input_masks[0].device)]
+
         # vace context encode
         z0 = self.vace_encode_frames(input_frames, input_ref_images, masks=input_masks)
         m0 = self.vace_encode_masks(input_masks, input_ref_images)
@@ -405,6 +435,7 @@ class WanVace(WanT2V):
                 device=self.device,
                 generator=seed_g)
         ]
+        noise_std = copy.deepcopy(noise)
         seq_len = math.ceil((target_shape[2] * target_shape[3]) /
                             (self.patch_size[1] * self.patch_size[2]) *
                             target_shape[1] / self.sp_size) * self.sp_size
@@ -426,6 +457,7 @@ class WanVace(WanT2V):
                 sample_scheduler.set_timesteps(
                     sampling_steps, device=self.device, shift=shift)
                 timesteps = sample_scheduler.timesteps
+                scheduler2 = copy.deepcopy(sample_scheduler)
             elif sample_solver == 'dpm++':
                 sample_scheduler = FlowDPMSolverMultistepScheduler(
                     num_train_timesteps=self.num_train_timesteps,
@@ -441,44 +473,58 @@ class WanVace(WanT2V):
 
             # sample videos
             latents = noise
-            masked_video = torch.stack(input_frames)
-            mask_video = torch.stack(input_masks)
+            inject_scene = False
 
-            gray_frames = [torch.ones(input_frames[0].shape, device=input_frames[0].device) * -0.0118]
-            white_masks = [torch.ones(input_masks[0].shape, device=input_masks[0].device)]
-            black_masks = [torch.zeros(input_masks[0].shape, device=input_masks[0].device)]
-            z0_active = self.vace_encode_frames(gray_frames, input_ref_images, masks=white_masks)
-            m0_active = self.vace_encode_masks(white_masks, input_ref_images)
-            z_active = self.vace_latent(z0_active, m0_active)
+            if confidence_map is not None:
+                m_confidence = self.vace_encode_confidences(confidence_map, input_ref_images)
 
-            z0_uncond = torch.zeros([len(z0)] + list(z0[0].shape), dtype=z0[0].dtype, device=z0[0].device)
-            m0_uncond = self.vace_encode_masks(white_masks, input_ref_images)
-            z_uncond = self.vace_latent(z0_uncond, m0_uncond)
-
-            arg_c = {'context': context, 'seq_len': seq_len}
-            arg_null = {'context': context_null, 'seq_len': seq_len}
-
-            save_attn = False
-            active_last_step = False
-            active_step = 39
-            use_cfg = True
-            cfg_guide_scale = 2
-            active_cfg_timestep = True
-            cfg_timestep = 47
+            if scene_frames is not None:
+                scene_latents = self.vae.encode(scene_frames)
+                z0_scene = self.vace_encode_frames(scene_frames, input_ref_images, masks=black_masks)
+                m0_scene = self.vace_encode_masks(black_masks, input_ref_images)
+                z_scene = self.vace_latent(z0_scene, m0_scene)
             
-            z_batch = z * 2
+            if enhance_scene:
+                z0_gray = self.vace_encode_frames(gray_frames, input_ref_images, masks=white_masks)
+                m0_white = self.vace_encode_masks(white_masks, input_ref_images)
+                z_active = self.vace_latent(z0_gray, m0_white)
+                z_batch = z_active * 2
+            else:
+                z_batch = z * 2
+            
             context_batch = context + context_null
 
-            if use_cfg:
-                z_batch += z_uncond
-                context_batch += context
+            if inject_scene:
+                latents = latents * 2
+                z_batch += z_scene
+                context_batch += [torch.zeros(context[0].shape).to(context[0])]    
 
             B = len(z_batch)
+            # arg_batch = {'context': context_batch, 'seq_len': seq_len}
             arg_batch = {'context': context_batch, 'seq_len': seq_len}
-
             print(timesteps)
 
             for idx, t in enumerate(tqdm(timesteps)):
+                if enhance_scene and idx < 49:
+                    continue
+                """
+                noised_scene_latents = []
+                for i in range(len(m_confidence)):
+                    conf = m_confidence[i][:, 1:, :, :]
+                    # conf = 0.25 + 0.75 * conf 
+                    noised_scene_latent = copy.deepcopy(latents[i])
+                    weight = conf
+                    # weight = (1 - t / 1000)
+                    if input_ref_images is not None:
+                        # scene_latents[i] = conf * scene_latents[i] + (1 - conf) * noise[i][:, 1:, :, :]
+                        # noised_scene_latent[:, 1:, :, :] = conf * scene_latents[i] + (1 - conf) * noised_scene_latent[:, 1:, :, :]
+                        noised_scene_latent[:, 1:, :, :] = (1 - t / 1000) * noised_scene_latent[:, 1:, :, :] + t / 1000 * noise_std[i][:, 1:, :, :]
+                    else:
+                        noised_scene_latent = conf * scene_latents[i] + (1 - conf) * noised_scene_latent[i]
+                    noised_scene_latents.append(noised_scene_latent)
+                latents = noised_scene_latents
+                """
+
                 latent_model_input = latents
                 # print(latent_model_input[0].shape) # (16, 22, 60, 90) = (C, 1 (ref image) + 1 + T / 4, H / 8, W / 8)
                 timestep = [t]
@@ -487,138 +533,68 @@ class WanVace(WanT2V):
                 timestep = torch.stack(timestep)
                 timestep_batch = torch.stack(timestep_batch)
 
-                if active_last_step and idx > active_step:
-                    z = z_active
-
                 self.model.to(self.device)
+                
+                latent_model_input_batch = latent_model_input * B
+                if inject_scene:
+                    latent_model_input_batch = [latent_model_input[0], latent_model_input[0], latent_model_input[1]]
 
-                latent_model_input_batch = latents * B
-
+                if enhance_scene:
+                    latent_model_input[0] = [scene_latent * (1 - t / 1000) + noise * t / 1000 for scene_latent, noise in zip(scene_latents, noise_std)][0]
+                    latent_model_input_batch = latent_model_input * B
+                
                 output = self.model(
                     latent_model_input_batch, t=timestep_batch, vace_context=z_batch, vace_context_scale=context_scale, **arg_batch
                 )
+                
                 noise_pred_cond = output[0]
                 noise_pred_uncond = output[1]
-                if use_cfg:
-                    noise_uncond = output[2]
-                """
-                noise_pred_cond = self.model(
-                    latent_model_input, t=timestep, vace_context=z, vace_context_scale=context_scale, **arg_c)[0]
+                if inject_scene:
+                    noise_scene = output[2]
                 
-                if save_attn:
-                    import numpy as np
-                    # wan branch dit blocks
-                    root_dir = "/data/ckd248/SCVideo/Video_Generation/attention_map/VACE/normal"
-                    dynamic_masking_step_threshold = 25
-                    os.makedirs(root_dir, exist_ok=True)
-                    step_dir = os.path.join(root_dir, str(idx))
-                    os.makedirs(step_dir, exist_ok=True)
-                    sum_cross_attn_map = None
-                    for block_idx, block in enumerate(self.model.blocks):
-                        cross_attn_maps = block.cross_attn.attention_map # (num_heads, q_dim, k_dim)
-                        if sum_cross_attn_map is None:
-                            sum_cross_attn_map = cross_attn_maps
-                        else:
-                            sum_cross_attn_map += cross_attn_maps
-                    avg_cross_attn_map = sum_cross_attn_map / len(self.model.blocks)
-                    attn_map_path = os.path.join(step_dir, 'main_avg_attn_map.npy')
-                    np.save(attn_map_path, avg_cross_attn_map.detach().cpu().numpy())
-
-                    main_avg_cross_attn_map = torch.mean(avg_cross_attn_map, dim=0)
-                    main_human_cross_attn_map = main_avg_cross_attn_map[:, human_text_idx]
-
-                    # control branch dit blocks
-                    sum_cross_attn_map = None
-                    for block_idx, block in enumerate(self.model.vace_blocks):
-                        cross_attn_maps = block.cross_attn.attention_map # (num_heads, q_dim, k_dim)
-                        if sum_cross_attn_map is None:
-                            sum_cross_attn_map = cross_attn_maps
-                        else:
-                            sum_cross_attn_map += cross_attn_maps
-                    avg_cross_attn_map = sum_cross_attn_map / len(self.model.vace_blocks)
-                    attn_map_path = os.path.join(step_dir, 'control_avg_attn_map.npy')
-                    np.save(attn_map_path, avg_cross_attn_map.detach().cpu().numpy())
-
-                    control_avg_cross_attn_map = torch.mean(avg_cross_attn_map, dim=0)
-                    control_human_cross_attn_map = control_avg_cross_attn_map[:, human_text_idx]
-
-                    human_cross_attn_map = (main_human_cross_attn_map + control_human_cross_attn_map) / 2
-
-                    # masked_video, mask_video = self.generate_mask_from_attention(torch.stack(input_frames), torch.stack(input_masks), human_cross_attn_map)
-
-                    masked_video_path = os.path.join(step_dir, 'masked_video.mp4')
-                    from wan.utils.utils import cache_video
-                    cache_video(
-                    tensor=masked_video,
-                    save_file=masked_video_path,
-                    fps=16,
-                    nrow=1,
-                    normalize=True,
-                    value_range=(-1, 1))
-
-                    mask_video_path = os.path.join(step_dir, 'mask_video.mp4')
-                    cache_video(
-                    tensor=mask_video,
-                    save_file=mask_video_path,
-                    fps=16,
-                    nrow=1,
-                    normalize=True,
-                    value_range=(0, 1))
-
-                    if idx < dynamic_masking_step_threshold:
-                        z0_attn = self.vace_encode_frames(masked_video, input_ref_images, masks=mask_video)
-                        m0_attn = self.vace_encode_masks(mask_video, input_ref_images)
-                        z_attn = self.vace_latent(z0_attn, m0_attn)
-
-                noise_pred_uncond = self.model(
-                    latent_model_input, t=timestep, vace_context=z, vace_context_scale=context_scale,**arg_null)[0]
-                """
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
                 
-                if use_cfg:
-                    
-                    # noise_white_mask = self.model(
-                    #     latent_model_input, t=timestep, vace_context=z_active, vace_context_scale=context_scale,**arg_c)[0]
-                
-                    # noise_uncond = self.model(
-                    #     latent_model_input, t=timestep, vace_context=z_uncond, vace_context_scale=context_scale,**arg_c)[0]
-                    
-                    
-                    if active_cfg_timestep and idx > cfg_timestep:
-                        noise_pred = noise_pred + cfg_guide_scale * (noise_uncond - noise_pred)
-
                 temp_x0 = sample_scheduler.step(
                     noise_pred.unsqueeze(0),
                     t,
                     latents[0].unsqueeze(0),
                     return_dict=False,
                     generator=seed_g)[0]
-                latents = [temp_x0.squeeze(0)]
-                """
-                if save_attn and idx < dynamic_masking_step_threshold:
-                    z = z_attn
-
-                    decoded_video_path = os.path.join(step_dir, 'decoded_video.mp4')
-                    decoded_video = torch.stack(self.decode_latent(latents, input_ref_images))
-                    cache_video(
-                    tensor=decoded_video,
-                    save_file=decoded_video_path,
-                    fps=16,
-                    nrow=1,
-                    normalize=True,
-                    value_range=(-1, 1))
-                """
+                
+                if inject_scene:
+                    temp_x0_scene = scheduler2.step(
+                        noise_scene.unsqueeze(0),
+                        t,
+                        latents[1].unsqueeze(0),
+                        return_dict=False,
+                        generator=seed_g)[0]
+                
+                if inject_scene:
+                    latents = [temp_x0.squeeze(0), temp_x0_scene.squeeze(0)]
+                else:
+                    latents = [temp_x0.squeeze(0)]
 
             x0 = latents
             if offload_model:
                 self.model.cpu()
                 torch.cuda.empty_cache()
             if self.rank == 0:
-                videos = self.decode_latent(x0, input_ref_images)
+                videos = self.decode_latent(x0, input_ref_images * len(x0))
+                if inject_scene:
+                    decoded_video_path = os.path.join("/home/ckd248/data/SCVideo/Video_Generation/VACE", "recon.mp4")
+                    decoded_video = videos[1]
+                    cache_video(
+                    tensor=decoded_video[None],
+                    save_file=decoded_video_path,
+                    fps=16,
+                    nrow=1,
+                    normalize=True,
+                    value_range=(-1, 1))
 
         del noise, latents
         del sample_scheduler
+        del scheduler2
         if offload_model:
             gc.collect()
             torch.cuda.synchronize()

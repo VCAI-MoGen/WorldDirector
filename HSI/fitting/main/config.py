@@ -52,6 +52,20 @@ class Config:
                 self.use_depthmap_loss = False
                 self.use_kpt_loss = True
             else:
+                self.warmup = False
+                self.use_depthmap_loss = False
+                self.use_kpt_loss = True
+        elif epoch == 1:
+            self.lr = 1e-2
+            self.lr_dec_itr = [200]
+            self.stage_itr = [50]
+            self.depth_loss_weight = 0.01
+            self.kpt_loss_weight = 10.0
+            if itr < self.stage_itr[0]:
+                self.warmup = False
+                self.use_depthmap_loss = False
+                self.use_kpt_loss = True
+            else:
                 self.lr = 1e-2
                 self.warmup = False
                 self.use_depthmap_loss = False
@@ -62,7 +76,7 @@ class Config:
             self.depth_loss_weight = 0.01
             self.kpt_loss_weight = 1.0
             self.warmup = False
-            self.use_depthmap_loss = True
+            self.use_depthmap_loss = False
             self.use_kpt_loss = True
 
 cfg = Config()

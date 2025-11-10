@@ -63,6 +63,19 @@ def main():
                     for frame_idx in data['frame_idx']:
                         for key in ['root_pose', 'trans']:
                             optimizable_params.append({'params': [smplx_params[int(frame_idx)][key]], 'name': key, 'lr': cfg.lr})
+                    # optimizable_params.append({'params': [smplx_scale], 'name': 'smplx_scale', 'lr': cfg.lr})
+                    trainer.get_optimizer(optimizable_params)
+                elif ((epoch == 0 or epoch == 1) and (itr_opt == cfg.stage_itr[0])):
+                    # all parameters
+                    optimizable_params = []
+                    if epoch == (cfg.end_epoch - 1):
+                        optimizable_params = [] # do not optimize shared parameters to make per-frame parameters consistent with the shared ones
+                    else:
+                        optimizable_params = [{'params': [smplx_shape], 'name': 'smplx_shape', 'lr': cfg.lr}] # all shared parameters
+                        # optimizable_params.append({'params': [smplx_scale], 'name': 'smplx_scale', 'lr': cfg.lr})
+                    for frame_idx in data['frame_idx']:
+                        for key in ['root_pose', 'trans']:
+                            optimizable_params.append({'params': [smplx_params[int(frame_idx)][key]], 'name': key, 'lr': cfg.lr})
                     optimizable_params.append({'params': [smplx_scale], 'name': 'smplx_scale', 'lr': cfg.lr})
                     trainer.get_optimizer(optimizable_params)
                 elif (epoch == 0) and (itr_opt == cfg.stage_itr[0]):

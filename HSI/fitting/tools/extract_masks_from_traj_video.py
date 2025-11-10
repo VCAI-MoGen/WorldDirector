@@ -41,7 +41,7 @@ def mask_to_bbox_mask(mask: np.ndarray) -> np.ndarray:
     ys, xs = np.where(mask > 0)
 
     if len(xs) == 0 or len(ys) == 0:
-        return np.zeros_like(mask, dtype=np.uint8)
+        return np.zeros_like(mask[:, :, None], dtype=np.uint8)
 
     x_min, x_max = xs.min(), xs.max()
     y_min, y_max = ys.min(), ys.max()
@@ -97,7 +97,12 @@ def load_ply_mesh(ply_path):
 cam_params_path = os.path.join(traj_root_path, 'cam_params_scene')
 target_cam_params_path = os.path.join(detailed_root_path, 'cam_params_scene')
 smplx_ply_path = os.path.join(traj_root_path, 'smplx_optimized', 'meshes_smoothed')
-scene_render_video_path = os.path.join(detailed_root_path, 'scene_render_video.mp4')
+if os.path.exists(os.path.join(detailed_root_path, 'scene_render_difix_enhanced.mp4')):
+    scene_render_video_path = os.path.join(detailed_root_path, 'scene_render_difix_enhanced.mp4')
+elif os.path.exists(os.path.join(detailed_root_path, 'scene_render_difix.mp4')):
+    scene_render_video_path = os.path.join(detailed_root_path, 'scene_render_difix.mp4')
+else:
+    scene_render_video_path = os.path.join(detailed_root_path, 'scene_render_video.mp4')
 scene_render_frames = np.array([frame for frame in imageio.get_reader(scene_render_video_path)]) # (N, H, W, 3)
 mask_video_path = os.path.join(detailed_root_path, 'mask_video.mp4')
 human_masked_video_path = os.path.join(detailed_root_path, 'human_masked_video.mp4')
