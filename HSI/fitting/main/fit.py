@@ -38,16 +38,12 @@ def main():
 
     # register initial smplx parameters
     smplx_params = {}
-
     smplx_shape = nn.Parameter(torch.zeros((smpl_x.shape_param_dim)).float().cuda())
     smplx_scale = nn.Parameter(torch.tensor([1.0], requires_grad=True).float().cuda())
-
     for frame_idx in trainer.smplx_params.keys():
         smplx_params[frame_idx] = {}
-        for key in ['root_pose', 'body_pose', 'lhand_pose', 'rhand_pose']:
+        for key in ['root_pose', 'body_pose', 'jaw_pose', 'leye_pose', 'reye_pose', 'lhand_pose', 'rhand_pose']:
             smplx_params[frame_idx][key] = nn.Parameter(axis_angle_to_rotation_6d(trainer.smplx_params[frame_idx][key].cuda()))
-        for key in ['jaw_pose', 'leye_pose', 'reye_pose']:
-            smplx_params[frame_idx][key] = nn.Parameter(axis_angle_to_rotation_6d(trainer.smplx_params[frame_idx][key].cuda())) 
         smplx_params[frame_idx]['expr'] = nn.Parameter(trainer.smplx_params[frame_idx]['expr'].cuda())
         smplx_params[frame_idx]['trans'] = nn.Parameter(trainer.smplx_params[frame_idx]['trans'].cuda())
 
@@ -64,38 +60,17 @@ def main():
                 if (epoch == 0) and (itr_opt == 0):
                     # smplx root pose and translatioin and scale
                     optimizable_params = []
-                    # for frame_idx in data['frame_idx']:
-                    #     for key in ['root_pose', 'trans']:
-                    #         optimizable_params.append({'params': [smplx_params[int(frame_idx)][key]], 'name': key, 'lr': cfg.lr})
+                    for frame_idx in data['frame_idx']:
+                        for key in ['root_pose', 'trans']:
+                            optimizable_params.append({'params': [smplx_params[int(frame_idx)][key]], 'name': key, 'lr': cfg.lr})
                     optimizable_params.append({'params': [smplx_scale], 'name': 'smplx_scale', 'lr': cfg.lr})
                     trainer.get_optimizer(optimizable_params)
-                elif ((epoch == 0 or epoch == 1) and (itr_opt == cfg.stage_itr[0])):
+                elif (epoch == 0) and (itr_opt == cfg.stage_itr[0]):
                     # all parameters
-                    optimizable_params = []
-                    if epoch == (cfg.end_epoch - 1):
-                        optimizable_params = [] # do not optimize shared parameters to make per-frame parameters consistent with the shared ones
-                    else:
-                        optimizable_params = [{'params': [smplx_shape], 'name': 'smplx_shape', 'lr': cfg.lr}] # all shared parameters
-                        optimizable_params.append({'params': [smplx_scale], 'name': 'smplx_scale', 'lr': cfg.lr})
+                    optimizable_params = [{'params': [smplx_shape], 'name': 'smplx_shape', 'lr': cfg.lr}, {'params': [smplx_scale], 'name': 'smplx_scale', 'lr': cfg.lr}] 
                     for frame_idx in data['frame_idx']:
-                        # for key in ['root_pose', 'body_pose', 'lhand_pose', 'rhand_pose', 'trans', 'jaw_pose', 'leye_pose', 'reye_pose', 'expr']:
-                        for key in ['root_pose', 'trans']:
-                        # for key in ['trans']:
+                         for key in ['root_pose', 'body_pose', 'jaw_pose', 'leye_pose', 'reye_pose', 'lhand_pose', 'rhand_pose', 'expr', 'trans']:
                             optimizable_params.append({'params': [smplx_params[int(frame_idx)][key]], 'name': key, 'lr': cfg.lr})
-                    trainer.get_optimizer(optimizable_params)
-                elif ((epoch > 1) and (itr_opt == 0)):
-                    optimizable_params = []
-                    if epoch == (cfg.end_epoch - 1):
-                        optimizable_params = [] # do not optimize shared parameters to make per-frame parameters consistent with the shared ones
-                    else:
-                        optimizable_params = [{'params': [smplx_shape], 'name': 'smplx_shape', 'lr': cfg.lr}] # all shared parameters
-                        optimizable_params.append({'params': [smplx_scale], 'name': 'smplx_scale', 'lr': cfg.lr})
-                    for frame_idx in data['frame_idx']:
-                        # for key in ['root_pose', 'body_pose', 'lhand_pose', 'rhand_pose', 'trans', 'jaw_pose', 'leye_pose', 'reye_pose', 'expr']:
-                        for key in ['root_pose', 'trans']:
-                        # for key in ['trans']:
-                            optimizable_params.append({'params': [smplx_params[int(frame_idx)][key]], 'name': key, 'lr': cfg.lr})
-
                     trainer.get_optimizer(optimizable_params)
 
                 # inputs
@@ -128,7 +103,7 @@ def main():
                     ]
                 screen += ['%s: %.4f' % ('loss_' + k, v.detach()) for k,v in loss.items()]
                 print(screen)
-                print(f'smplx_scale: {round(smplx_scale.item(), 4)}')
+                print('smplx_scale: ' + str(smpl_x.get_scale(smplx_scale)))
             
             # save
             if epoch != (cfg.end_epoch-1):
@@ -174,7 +149,7 @@ def main():
                         json.dump(smplx_shape.detach().cpu().numpy().tolist(), f)
                     # mesh scale
                     with open(osp.join(save_root_path, 'scale.json'), 'w') as f:
-                        json.dump(smplx_scale.detach().cpu().numpy().tolist(), f)
+                        json.dump(smpl_x.get_scale(smplx_scale).detach().cpu().numpy().tolist(), f)
 
                 # human trajectory
                 save_path = osp.join(save_root_path, 'traj')

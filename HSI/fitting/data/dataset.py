@@ -5,14 +5,12 @@ import cv2
 import os.path as osp
 from glob import glob
 from utils.smpl_x import smpl_x
-from utils.flame import flame
 from utils.preprocessing import load_img, get_bbox, set_aspect_ratio, get_patch_img
 from utils.transforms import change_kpt_name
 from pytorch3d.transforms import matrix_to_axis_angle, axis_angle_to_matrix
 from pytorch3d.ops import corresponding_points_alignment
 import json
 import math
-import open3d as o3d
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, transform, cfg):
@@ -27,9 +25,8 @@ class Dataset(torch.utils.data.Dataset):
                         'L_Wrist_Hand', 'L_Thumb_1', 'L_Thumb_2', 'L_Thumb_3', 'L_Thumb_4', 'L_Index_1', 'L_Index_2', 'L_Index_3', 'L_Index_4', 'L_Middle_1', 'L_Middle_2', 'L_Middle_3', 'L_Middle_4', 'L_Ring_1', 'L_Ring_2', 'L_Ring_3', 'L_Ring_4', 'L_Pinky_1', 'L_Pinky_2', 'L_Pinky_3', 'L_Pinky_4', # left hand
                         'R_Wrist_Hand', 'R_Thumb_1', 'R_Thumb_2', 'R_Thumb_3', 'R_Thumb_4', 'R_Index_1', 'R_Index_2', 'R_Index_3', 'R_Index_4', 'R_Middle_1', 'R_Middle_2', 'R_Middle_3', 'R_Middle_4', 'R_Ring_1', 'R_Ring_2', 'R_Ring_3', 'R_Ring_4', 'R_Pinky_1', 'R_Pinky_2', 'R_Pinky_3', 'R_Pinky_4') # right hand
                     }
-        self.cam_params, self.kpts, self.depth_paths, self.smplx_params, self.smplx_shape_param, self.flame_params, self.flame_shape_param, self.frame_idx_list, self.img_paths, self.depth_vggt_paths = self.load_data()
+        self.cam_params, self.kpts, self.depth_paths, self.smplx_params, self.smplx_shape_param, self.frame_idx_list, self.img_paths, self.depth_vggt_paths = self.load_data()
         self.get_smplx_trans_init() # get initial smplx translation 
-        self.get_flame_root_init() # get initial flame root pose and translation
 
     def load_data(self):
         # load camera parameter
@@ -75,35 +72,13 @@ class Dataset(torch.utils.data.Dataset):
                 smplx_params[frame_idx] = {k: torch.FloatTensor(v) for k,v in json.load(f).items()}
         
         smplx_shape_param = torch.zeros((smpl_x.shape_param_dim))
-
-        # load initial flame parameters 
-        flame_params = {}
-        flame_param_path_list = glob(osp.join(self.root_path, 'flame_init', 'flame_params', '*.json'))
-        for flame_param_path in flame_param_path_list:
-            frame_idx = int(flame_param_path.split('/')[-1][:-5])
-            with open(flame_param_path) as f:
-                flame_param = json.load(f)
-            if not flame_param['is_valid']:
-                for k in flame_param.keys():
-                    if 'pose' in k:
-                        flame_param[k] = torch.zeros((3)).float() # dummy
-                flame_param['expr'] = torch.zeros((flame.expr_param_dim)).float() # dummy
-            for k,v in flame_param.items():
-                if k == 'is_valid':
-                    continue
-                else:
-                    flame_param[k] = torch.FloatTensor(v)
-            flame_params[frame_idx] = flame_param
-        with open(osp.join(self.root_path, 'flame_init', 'shape_param.json')) as f:
-            flame_shape_param = torch.FloatTensor(json.load(f))
-
         frame_idx_list = [int(x) for x in cam_params.keys()]
 
         img_paths = {}
         for frame_idx in frame_idx_list:
             img_path = osp.join(self.root_path, 'frames', str(frame_idx) + '.png')
             img_paths[frame_idx] = img_path
-        return cam_params, kpts, depth_paths, smplx_params, smplx_shape_param, flame_params, flame_shape_param, frame_idx_list, img_paths, depth_vggt_paths
+        return cam_params, kpts, depth_paths, smplx_params, smplx_shape_param, frame_idx_list, img_paths, depth_vggt_paths
 
     def get_smplx_trans_init(self):
         for i in range(len(self.frame_idx_list)):
@@ -124,23 +99,6 @@ class Dataset(torch.utils.data.Dataset):
             t_y = (t_y - princpt[1]) / focal[1] * t_z # meter
             t_xyz = torch.FloatTensor([t_x, t_y, t_z]) 
             self.smplx_params[frame_idx]['trans'] = t_xyz
-
-    def get_flame_root_init(self):
-        for i in range(len(self.frame_idx_list)):
-            frame_idx = self.frame_idx_list[i]
-            
-            smplx_root_pose = axis_angle_to_matrix(self.smplx_params[frame_idx]['root_pose'])
-            smplx_root_trans = self.smplx_params[frame_idx]['trans']
-            smplx_init = torch.matmul(smplx_root_pose, smpl_x.layer['neutral'].v_template.permute(1,0)).permute(1,0)
-            smplx_init = (smplx_init - smplx_init.mean(0)[None,:] + smplx_root_trans[None,:])[smpl_x.face_vertex_idx,:]
-            
-            # get initial root pose and translation with the rigid alignment
-            flame_init = flame.layer.v_template
-            RTs = corresponding_points_alignment(flame_init[None], smplx_init[None])
-            R = RTs.R.permute(0,2,1)[0]
-            flame_init = torch.matmul(R, flame_init.permute(1,0)).permute(1,0)
-            self.flame_params[frame_idx]['root_pose'] = matrix_to_axis_angle(R)
-            self.flame_params[frame_idx]['trans'] = -flame_init.mean(0) + smplx_init.mean(0)
 
     def __len__(self):
         return len(self.frame_idx_list)
@@ -209,13 +167,6 @@ class Dataset(torch.utils.data.Dataset):
         # smplx parameter
         smplx_param = self.smplx_params[frame_idx]
 
-        # flame parameter
-        if np.sum(kpt_valid[smpl_x.kpt['part_idx']['face'],0]) == 0:
-            self.flame_params[frame_idx]['is_valid'] = False
-        flame_param = self.flame_params[frame_idx]
-        flame_param['shape'] = self.flame_shape_param
-        flame_valid = flame_param['is_valid']
-
         # modify intrincis
         focal = self.cam_params[frame_idx]['focal']
         princpt = self.cam_params[frame_idx]['princpt']
@@ -248,8 +199,6 @@ class Dataset(torch.utils.data.Dataset):
                 'depth_vggt': depth_vggt,
                 'mask': human_mask, 
                 'smplx_param': smplx_param, 
-                'flame_param': flame_param, 
-                'flame_valid': flame_valid, 
                 'cam_param': {'focal': focal, 'princpt': princpt, 'R': cam_rotation, 't': cam_translation}, 
                 'cam_param_vggt': {'focal': focal_vggt, 'princpt': princpt_vggt, 'R': cam_rotation, 't': cam_translation},
                 'cam_param_kpt': {'focal': focal_kpt, 'princpt': princpt_kpt, 'R': cam_rotation, 't': cam_translation}, 
