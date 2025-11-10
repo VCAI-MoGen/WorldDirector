@@ -122,7 +122,6 @@ class Dataset(torch.utils.data.Dataset):
         # vggt depth shape is different with original image shape. we should handle this.
         depth = np.load(self.depth_paths[frame_idx])
         depth_mask = np.load(self.depth_paths[frame_idx][:-4] + '_mask.npy').astype(np.float32)
-        human_mask = depth_mask
         depth_vggt = np.load(self.depth_vggt_paths[frame_idx])
         depth_vggt_mask = cv2.resize(depth_mask, (depth_vggt.shape[1], depth_vggt.shape[0]), interpolation=cv2.INTER_NEAREST)
 
@@ -138,25 +137,10 @@ class Dataset(torch.utils.data.Dataset):
         kpt_img_vggt_xy1 = np.concatenate((kpt_img_vggt, np.ones_like(kpt_img_vggt[:,:1])),1)
         kpt_img_vggt = np.dot(img2bb_trans, kpt_img_vggt_xy1.transpose(1,0)).transpose(1,0)
 
-        # lift 2d keypoint to 3d using depth map
-        kpt_2d = self.kpts[frame_idx][:, :2]
-        kpt_2d[:, 0] = kpt_2d[:, 0] / origin_w * vggt_w
-        kpt_2d[:, 1] = kpt_2d[:, 1] / origin_h * vggt_h
-        u = np.clip(np.round(kpt_2d[:, 0]).astype(np.int32), 0, vggt_w - 1)
-        v = np.clip(np.round(kpt_2d[:, 1]).astype(np.int32), 0, vggt_h - 1)
-        fx, fy = self.cam_params[frame_idx]['focal']
-        cx, cy = self.cam_params[frame_idx]['princpt']
-        fx, fy = np.array([fx / origin_w * vggt_w, fy / origin_h * vggt_h], dtype=np.float32)
-        cx, cy = np.array([cx // 2, cy // 2],  dtype=np.float32)
-        z = depth_vggt[v, u]
-        x = (kpt_2d[:, 0] - cx) * z / fx
-        y = (kpt_2d[:, 1] - cy) * z / fy
-        kpt_3d = np.stack((x, y, z), axis=1)
-        
-
         _, img2bb_trans, bb2img_trans = get_patch_img(np.ones((10,10,3),dtype=np.uint8), bbox, self.cfg.depth_render_shape) # get transformation matrix with dummy image
         depth = cv2.warpAffine(depth, img2bb_trans, (self.cfg.depth_render_shape[1], self.cfg.depth_render_shape[0]), flags=cv2.INTER_LINEAR)
         depth_mask = cv2.warpAffine(depth_mask, img2bb_trans, (self.cfg.depth_render_shape[1], self.cfg.depth_render_shape[0]), flags=cv2.INTER_LINEAR)
+        human_mask = (depth_mask == 1)
         depth = (depth * (depth_mask==1))[None,:,:]
 
         _, img2bb_trans, bb2img_trans = get_patch_img(np.ones((10,10,3),dtype=np.uint8), bbox_vggt, self.cfg.depth_render_shape) # get transformation matrix with dummy image
@@ -193,7 +177,6 @@ class Dataset(torch.utils.data.Dataset):
                 'kpt_img': kpt_img,
                 'kpt_img_vggt': kpt_img_vggt,
                 'kpt_valid': kpt_valid, 
-                'kpt_3d': kpt_3d,
                 'bbox': bbox_orig,
                 'depth': depth, 
                 'depth_vggt': depth_vggt,

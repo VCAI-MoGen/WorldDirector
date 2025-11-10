@@ -10,8 +10,7 @@ class Config:
     lr_dec_factor = 10
     body_3d_size = 2 # meter
     batch_size = 81
-    end_epoch = 1
-    warmup_itr = 100
+    end_epoch = 2
 
     ## others
     num_thread = 16
@@ -34,12 +33,12 @@ class Config:
         self.subject_id = subject_id
         self.result_dir = osp.join(self.result_dir, subject_id)
         os.makedirs(self.result_dir, exist_ok=True)
- 
-    def set_itr_opt_num(self, epoch):
-        if epoch == 1:
+    
+    def set_itr_opt(self, epoch):
+        if epoch == 0:
             self.itr_opt_num = 300
         else:
-            self.itr_opt_num = 250
+            self.itr_opt_num = 100
 
     def set_stage(self, epoch, itr):
         if epoch == 0:
@@ -59,7 +58,7 @@ class Config:
                 self.use_kpt_loss = True
         else:
             self.lr = 1e-2
-            self.lr_dec_itr = [200]
+            self.lr_dec_itr = [75]
             self.depth_loss_weight = 0.01
             self.kpt_loss_weight = 1.0
             self.warmup = False

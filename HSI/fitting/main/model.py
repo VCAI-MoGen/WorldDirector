@@ -1,10 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from nets.loss import PoseLoss, DepthLoss, PoseReg, DepthL2Loss, DepthL1Loss
-from nets.layer import rasterize_xy
+from nets.loss import PoseLoss, PoseReg
 from utils.smpl_x import smpl_x
 from pytorch3d.transforms import rotation_6d_to_matrix, matrix_to_axis_angle
+from pytorch3d.structures import Meshes
+from pytorch3d.renderer import PerspectiveCameras, RasterizationSettings, MeshRasterizer
 import copy
 from config import cfg
 
@@ -13,9 +14,6 @@ class Model(nn.Module):
         super(Model, self).__init__()
         self.smplx_layer = copy.deepcopy(smpl_x.layer['neutral']).cuda()
         self.pose_loss = PoseLoss()
-        self.depth_loss = DepthLoss()
-        self.depth_l2_loss = DepthL2Loss()
-        self.depth_l1_loss = DepthL1Loss()
         self.pose_reg = PoseReg()
 
     def process_input_smplx_param(self, smplx_param):
@@ -66,7 +64,23 @@ class Model(nn.Module):
     def get_smplx_full_pose(self, smplx_param):
         pose = torch.cat((smplx_param['root_pose'][:,None,:], smplx_param['body_pose'], smplx_param['jaw_pose'][:,None,:], smplx_param['leye_pose'][:,None,:], smplx_param['reye_pose'][:,None,:], smplx_param['lhand_pose'], smplx_param['rhand_pose']),1) # follow smpl_x.joint['name']
         return pose
-    
+
+    def render_depth(self, vert, face, cam_param, render_shape):
+        batch_size = vert.shape[0]
+        face = torch.from_numpy(face).cuda()[None,:,:].repeat(batch_size,1,1)
+        vert = torch.stack((-vert[:,:,0], -vert[:,:,1], vert[:,:,2]),2) # reverse x- and y-axis following PyTorch3D axis direction
+        mesh = Meshes(vert, face)
+
+        cameras = PerspectiveCameras(focal_length=cam_param['focal'],
+                                    principal_point=cam_param['princpt'],
+                                    device='cuda',
+                                    in_ndc=False,
+                                    image_size=torch.LongTensor(render_shape).cuda().view(1,2))
+        raster_settings = RasterizationSettings(image_size=render_shape, blur_radius=0.0, faces_per_pixel=1, max_faces_per_bin=50000)
+        rasterizer = MeshRasterizer(cameras=cameras, raster_settings=raster_settings).cuda()
+        outputs = rasterizer(mesh).zbuf[:,None,:,:,0]
+        return outputs
+
     def forward(self, smplx_inputs, data, return_output):
         smplx_inputs = self.process_input_smplx_param(smplx_inputs) 
 
@@ -88,10 +102,8 @@ class Model(nn.Module):
         
         # rasterize depth map and compute depthmap loss
         if cfg.use_depthmap_loss:
-            smplx_depth = rasterize_xy(smplx_mesh_cam, smpl_x.face, data['cam_param_depth_vggt'], cfg.depth_render_shape).zbuf[:,None,:,:,0]
-            # loss['depth_l1'] = self.depth_l1_loss(smplx_depth, data['depth_vggt']) * 0.01
-            loss['depth_l2'] = self.depth_l2_loss(smplx_depth, data['depth_vggt']) * cfg.depth_loss_weight
-            # loss['depth'] = self.depth_loss(smplx_depth, data['depth_vggt']) * 0.01
+            smplx_depth = self.render_depth(smplx_mesh_cam, smpl_x.face, data['cam_param_depth_vggt'], cfg.depth_render_shape)
+            loss['depth'] = torch.abs(smplx_depth - data['depth_vggt']) * (smplx_depth > 0) * (data['depth_vggt'] > 0) * (data['mask'] > 0) * cfg.depth_loss_weight
             
         # For Deubgging
         
@@ -159,7 +171,6 @@ class Model(nn.Module):
         """
 
         if not cfg.warmup:
-                
             loss['smplx_shape_reg'] = smplx_inputs['shape'] ** 2 * 0.01
             loss['smplx_mesh'] = torch.abs((smplx_mesh_cam - smplx_kpt_cam[:,smpl_x.kpt['root_idx'],None,:]) - \
                                             (smplx_mesh_cam_init - smplx_kpt_cam_init[:,smpl_x.kpt['root_idx'],None,:])) * 0.1 

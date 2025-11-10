@@ -48,7 +48,7 @@ def main():
         smplx_params[frame_idx]['trans'] = nn.Parameter(trainer.smplx_params[frame_idx]['trans'].cuda())
 
     for epoch in range(cfg.end_epoch):
-        cfg.set_itr_opt_num(epoch)
+        cfg.set_itr_opt(epoch)
 
         for itr_data, data in enumerate(trainer.batch_generator):
             batch_size = data['kpt_img'].shape[0]
@@ -94,7 +94,6 @@ def main():
                 # backward
                 sum(loss[k] for k in loss).backward()
                 trainer.optimizer.step()
-                print(cfg.result_dir)
 
                 # log
                 screen = [
