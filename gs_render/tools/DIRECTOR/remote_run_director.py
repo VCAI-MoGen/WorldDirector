@@ -250,9 +250,12 @@ class RemoteDirector:
         self.diffuser, self.clip_model, self.dataset, self.device, self.control_cfg = \
             init_remote("config_remote", os.path.abspath(os.path.join(os.path.dirname(__file__), "configs")))
         
+        self.root_path = root_path
         if root_path is None:
             self.root_path = self.control_cfg.root_path
         self.PROMPT = self.control_cfg.prompt
+
+        print("Root path set to :", self.root_path)
         
         if self.control_cfg.random_seed:
             SEED = random.randint(10, 100)

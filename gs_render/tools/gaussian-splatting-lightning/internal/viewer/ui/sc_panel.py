@@ -152,6 +152,18 @@ class ScPanel:
         else:
             self.init_end_point = np.array([0.0, 0.0, 0.0])
 
+        self.smplx_root_position_path = os.path.join(self.root_path, 'smplx_root_position.json')
+        if os.path.exists(self.smplx_root_position_path):
+            with open(self.end_point_path, 'r') as f:
+                self.init_smplx_root_position_point = np.array(json.load(f))
+        else:
+            self.init_smplx_root_position_point = (self.init_start_point + self.init_end_point) / 2
+
+        if self.world_up_vector is not None:
+            self.init_up_vector_point = (self.init_start_point + self.init_end_point) / 2 + np.array(self.world_up_vector)
+        else:
+            self.init_up_vector_point = (self.init_start_point + self.init_end_point) / 2 + np.array([0.0, -1.0, 0.0])
+
         self.data_type_list = ['static', 'traj', 'detailed']
         self.current_data_type = self.data_type_list[0]
 
@@ -166,6 +178,17 @@ class ScPanel:
 
         self.langsam = LangSAM(sam_type="sam2.1_hiera_large")
         self.to_pil = T.ToPILImage()
+
+        self.set_path('static')
+        if os.path.exists(self.smplx_scale_path):
+            with open(self.smplx_scale_path, 'r') as f:
+                self.smplx_scale = torch.tensor(json.load(f))
+            print(f"SMPLX scale exists: {self.smplx_scale.tolist()}")
+        else:
+            self.smplx_scale = torch.tensor([1.0])
+        self.smplx_mesh = None
+
+        self.init_smplx_scale_factor = self.smplx_scale.detach().cpu().numpy()
 
         self._build_data_dir()
 
@@ -219,6 +242,14 @@ class ScPanel:
                 initial_value=self.init_end_point,
             )
 
+            self.start_point = self.server.gui.add_vector3(
+                "Start Point",
+                min=(self.min_x, self.min_y, self.min_z),
+                max=(self.max_x, self.max_y, self.max_z),
+                step=0.01,
+                initial_value=self.init_start_point,
+            )
+
             @self.start_point.on_update
             def _(event: viser.GuiEvent):
                 client = event.client
@@ -251,6 +282,90 @@ class ScPanel:
 
             self.start_point.value = self.init_start_point.tolist()
             self.end_point.value = self.init_end_point.tolist()
+
+            self.up_vector_point = self.server.gui.add_vector3(
+                "Up Vector Point",
+                min=(self.min_x, self.min_y, self.min_z),
+                max=(self.max_x, self.max_y, self.max_z),
+                step=0.01,
+                initial_value=self.init_up_vector_point,
+            )
+
+            @self.up_vector_point.on_update
+            def _(event: viser.GuiEvent):
+                start_point = np.array(self.start_point.value)
+                end_point = np.array(self.end_point.value)
+                center_point = (start_point + end_point) / 2
+
+                up_vector_vis = center_point + np.linspace(-1, 1, 100)[:, None] * (self.up_vector_point.value - center_point)
+
+                event.client.scene.add_point_cloud(
+                    name="world_up_vector",
+                    points=up_vector_vis,       # (N, 3)
+                    colors=np.array([0.0, 0.0, 0.0]),     # (N, 3) in [0, 1]
+                    point_size=0.01
+                )
+
+                event.client.scene.add_point_cloud(
+                    name="world_up_vector_end_point",
+                    points=np.array(self.up_vector_point.value)[None],       # (N, 3)
+                    colors=np.array([1.0, 0.0, 0.0]),     # (N, 3) in [0, 1]
+                    point_size=0.05
+                )
+
+            self.up_vector_point.value = self.init_up_vector_point.tolist()
+
+            self.smplx_root_point = self.server.gui.add_vector3(
+                "SMPLX Root Position Point",
+                min=(self.min_x, self.min_y, self.min_z),
+                max=(self.max_x, self.max_y, self.max_z),
+                step=0.01,
+                initial_value=self.init_smplx_root_position_point,
+            )
+
+            @self.smplx_root_point.on_update
+            def _(event: viser.GuiEvent):
+                if self.smplx_mesh is None or self.smplx_scale is None:
+                    print("smplx_mesh or smplx_scale not defined")
+                    return
+                mesh = self.smplx_mesh * self.smplx_scale[None, None, :] + torch.tensor(self.smplx_root_point.value)
+
+                with open(os.path.join(self.root_path, 'smplx_root_point.json'), 'w') as f:
+                    json.dump(self.smplx_root_point.value, f)
+
+                event.client.scene.add_point_cloud(
+                    name="smplx_mesh",
+                    points=mesh.squeeze().detach().cpu().numpy(),       # (N, 3)
+                    colors=np.array([0.1, 0.2, 0.3]),     # (N, 3) in [0, 1]
+                    point_size=0.01
+                )
+
+            self.smplx_root_point.value = self.init_smplx_root_position_point.tolist()
+
+            self.smplx_scale_factor = self.server.gui.add_number(
+                "SMPLX Scale Factor",
+                min=0.0,
+                max=20.0,
+                step=0.01,
+                initial_value=self.init_smplx_scale_factor.item(),
+            )
+
+            @self.smplx_scale_factor.on_update
+            def _(event: viser.GuiEvent):
+                device = self.smplx_scale.device
+                dtype = self.smplx_scale.dtype
+                self.smplx_scale = torch.tensor([self.smplx_scale_factor.value], device=device, dtype=dtype)
+
+                mesh = self.smplx_mesh * self.smplx_scale[None, None, :] + torch.tensor(self.smplx_root_point.value)
+
+                event.client.scene.add_point_cloud(
+                    name="smplx_mesh",
+                    points=mesh.squeeze().detach().cpu().numpy(),       # (N, 3)
+                    colors=np.array([0.1, 0.2, 0.3]),     # (N, 3) in [0, 1]
+                    point_size=0.01
+                )
+
+            self.smplx_scale_factor.value = self.init_smplx_scale_factor.item()
 
             pick_start_point_button = self.server.gui.add_button(
                 "Pick Start point",
@@ -484,6 +599,134 @@ class ScPanel:
                     point_size=0.01,
                     point_shape='circle'
                 )
+
+
+            get_ref_up_vector_button = self.server.gui.add_button(
+                "Get Reference Up Vector from Cam",
+                color="red",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="Estimate Up Vector",
+            )
+            @get_ref_up_vector_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                look_at = event.client.camera.look_at
+                position = event.client.camera.position
+                forward = look_at - position
+                forward = forward / np.linalg.norm(forward)
+
+                print("estimated up vector:", -forward)
+                self.world_up_vector = torch.tensor(-forward)
+
+                start_point = np.array(self.start_point.value)
+                end_point = np.array(self.end_point.value)
+                center_point = (start_point + end_point) / 2
+                self.ref_dist = self.calculate_ref_distance()
+
+                self.up_vector_point.value = center_point + self.world_up_vector.detach().cpu().numpy()
+
+                up_vector_vis = center_point + np.linspace(-1, 1, 100)[:, None] * (self.up_vector_point.value - center_point)
+
+                event.client.scene.add_point_cloud(
+                    name="world_up_vector",
+                    points=up_vector_vis,       # (N, 3)
+                    colors=np.array([0.0, 0.0, 0.0]),     # (N, 3) in [0, 1]
+                    point_size=0.01
+                )
+
+                event.client.scene.add_point_cloud(
+                    name="world_up_vector_end_point",
+                    points=np.array(self.up_vector_point.value)[None],       # (N, 3)
+                    colors=np.array([1.0, 0.0, 0.0]),     # (N, 3) in [0, 1]
+                    point_size=0.05
+                )
+
+
+            save_up_vector_button = self.server.gui.add_button(
+                "Save Positioned Up Vector",
+                color="purple",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="Save Up Vector according to Up Vector Point",
+            )
+            @save_up_vector_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                if self.world_up_vector is None:
+                    print("No up vector defined")
+                    return
+            
+                start_point = np.array(self.start_point.value)
+                end_point = np.array(self.end_point.value)
+                center_point = (start_point + end_point) / 2
+
+                self.world_up_vector = torch.tensor(self.up_vector_point.value - center_point)
+                self.world_up_vector /= torch.linalg.norm(self.world_up_vector)
+                
+                ref_dist = None
+                if os.path.exists(self.up_vector_path):
+                    with open(self.up_vector_path, 'r') as f:
+                        data = json.load(f)
+                    if len(data) > 3:
+                        ref_dist = data[-1]
+                
+                with open(self.up_vector_path, 'w') as f:
+                    if ref_dist is None:
+                        ref_dist = 1.5
+                    json.dump(self.world_up_vector.tolist() + [ref_dist], f)
+
+                print("Saved up vector :", self.world_up_vector, self.up_vector_path)
+
+            place_smplx_point_cloud_button = self.server.gui.add_button(
+                "Place SMPLX Point Cloud",
+                color="red",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="Place SMPLX Point Cloud for Scale Estimation",
+            )
+            @place_smplx_point_cloud_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                device = self.smplx_scale.device
+                dtype = self.smplx_scale.dtype
+
+                self.smplx_mesh = self.get_default_smplx_mesh().to(device)
+
+                self.smplx_scale = torch.tensor([self.smplx_scale_factor.value], device=device, dtype=dtype)
+
+                mesh = self.smplx_mesh * self.smplx_scale[None, None, :] + torch.tensor(self.smplx_root_point.value, device=device, dtype=dtype)
+
+                event.client.scene.add_point_cloud(
+                    name="smplx_mesh",
+                    points=mesh.squeeze().detach().cpu().numpy(),       # (N, 3)
+                    colors=np.array([0.1, 0.2, 0.3]),     # (N, 3) in [0, 1]
+                    point_size=0.01
+                )
+
+
+            save_smplx_scale = self.server.gui.add_button(
+                "Save SMPLX Scale",
+                color="purple",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="Save smplx scale",
+            )
+            @save_smplx_scale.on_click
+            def _(event: viser.GuiEvent) -> None:
+                self.set_path('static')
+                if self.smplx_scale is None:
+                    print("No smplx scale defined")
+                    return
+
+                os.makedirs(os.path.dirname(self.smplx_scale_path), exist_ok=True)
+
+                with open(self.smplx_scale_path, 'w') as f:
+                    json.dump(self.smplx_scale.tolist(), f)
+                    print("Saved at:", self.smplx_scale_path)
+                
+                with open(self.up_vector_path, 'r') as f:
+                    data = json.load(f)
+                    data[-1] = (self.smplx_scale / 2).item()
+                    self.ref_dist = data[-1]
+
+                with open(self.up_vector_path, 'w') as f:
+                    json.dump(data, f)
+
+                print("Saved smplx scale and ref_dist :", self.smplx_scale, self.smplx_scale_path, self.up_vector_path)
 
             dump_image_for_static = self.server.gui.add_button(
                 "Dump Image (Static)",
@@ -723,7 +966,7 @@ class ScPanel:
                 start_image = render[0].detach().cpu().numpy().copy().astype(np.uint8)
                 end_image = render[0].detach().cpu().numpy().copy().astype(np.uint8)
 
-                bbox_mask = bbox_mask.squeeze(dim=-1).repeat(1, 1, 1, 3).detach().cpu().numpy().astype(np.uint8) * 255 # (N, H, W)
+                bbox_mask = bbox_mask.repeat(1, 1, 1, 3).detach().cpu().numpy().astype(np.uint8) * 255 # (N, H, W)
 
                 start_image[bbox_mask[0] > 0] = 127
                 end_image[bbox_mask[1] > 0] = 127
@@ -855,6 +1098,37 @@ class ScPanel:
                 print("Finish Dumping!")
 
                 self.run_difx()
+
+            generate_camera_params_button = self.server.gui.add_button(
+                "Generate Camera Params and Scene Vid",
+                color="red",
+                icon=viser.Icon.LIVE_PHOTO,
+                hint="Generates cam params and render scene video.",
+            )
+            @generate_camera_params_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                self.director_controller.generate_cam_params(event.client)
+            
+            render_human_video_button = self.server.gui.add_button(
+                "Render Human and Masked Video",
+                color="blue",
+                icon=viser.Icon.LIVE_PHOTO,
+                hint="Render human and masked video according to generated cam params.",
+            )
+            @render_human_video_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                self.director_controller.render_masked_human_video()
+
+            generate_camera_params_and_render_video_button = self.server.gui.add_button(
+                "Generate Camera Params and Video",
+                color="red",
+                icon=viser.Icon.LIVE_PHOTO,
+                hint="Generate cam params and render scene, human, masked video.",
+            )
+            @generate_camera_params_and_render_video_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                self.director_controller.generate_cam_params_and_video(event.client)
+            
 
     def _setup_refine_folder(self):
         with self.server.gui.add_folder("Refine"):
@@ -1020,14 +1294,23 @@ class ScPanel:
                 center_point = (start_point + end_point) / 2
                 self.ref_dist = self.calculate_ref_distance()
 
-                point_on_plane = center_point - self.world_up_vector.detach().cpu().numpy() * self.ref_dist
-                up_vector_vis = point_on_plane + np.linspace(0, 1, 100)[:, None] * (center_point - point_on_plane)
+                # point_on_plane = center_point - self.world_up_vector.detach().cpu().numpy() * self.ref_dist
+                # up_vector_vis = point_on_plane + np.linspace(0, 1, 100)[:, None] * (center_point - point_on_plane)
+
+                up_vector_vis = center_point + np.linspace(-1, 1, 100)[:, None] * (self.up_vector_point.value - center_point)
 
                 client.scene.add_point_cloud(
                     name="world_up_vector",
                     points=up_vector_vis,       # (N, 3)
                     colors=np.array([0.0, 0.0, 0.0]),     # (N, 3) in [0, 1]
                     point_size=0.01
+                )
+
+                event.client.scene.add_point_cloud(
+                    name="world_up_vector_end_point",
+                    points=np.array(self.up_vector_point.value)[None],       # (N, 3)
+                    colors=np.array([1.0, 0.0, 0.0]),     # (N, 3) in [0, 1]
+                    point_size=0.05
                 )
 
             data_type_dropdown = self.server.gui.add_dropdown(
@@ -2008,7 +2291,6 @@ class ScPanel:
             smplx_param = json.load(f)
         with open(self.smplx_shape_path, 'r') as f:
             smplx_shape = json.load(f)
-        device = 'cpu'
         smpl_x.layer['neutral'] = smpl_x.layer['neutral'].to(device)
         output = smpl_x.layer['neutral'](
             global_orient = torch.tensor(smplx_param['root_pose'])[None].to(device), \
@@ -2042,7 +2324,38 @@ class ScPanel:
         up_vector = up_vector
 
         return smplx_scale.item(), up_vector
+    
+    def get_default_smplx_mesh(self):
+        device = 'cuda:0'
+        self.set_path('static')
+        smpl_x.layer['neutral'] = smpl_x.layer['neutral'].to(device)
+        output = smpl_x.layer['neutral'](
+            global_orient=torch.zeros(1, 3, device=device),
+            body_pose=torch.zeros(1, 63, device=device),
+            jaw_pose=torch.zeros(1, 3, device=device),
+            leye_pose=torch.zeros(1, 3, device=device),
+            reye_pose=torch.zeros(1, 3, device=device),
+            left_hand_pose=torch.zeros(1, 45, device=device),
+            right_hand_pose=torch.zeros(1, 45, device=device),
+            betas=torch.zeros(1, 100, device=device),
+            expression=torch.zeros(1, 10, device=device),
+            transl=torch.zeros(1, 3, device=device),
+        )
+        mesh = output.vertices
+        kpt = output.joints[:,smpl_x.kpt['idx'],:]
 
+        pelvis_kpt = kpt[:, smpl_x.kpt['idx'][smpl_x.kpt['name'].index('Pelvis')], :]
+        left_shoulder_kpt = kpt[:, smpl_x.kpt['idx'][smpl_x.kpt['name'].index('L_Shoulder')], :]
+        right_shoulder_kpt = kpt[:, smpl_x.kpt['idx'][smpl_x.kpt['name'].index('R_Shoulder')], :]
+
+        up_vector = (left_shoulder_kpt + right_shoulder_kpt) / 2 - pelvis_kpt
+        up_vector = torch.nn.functional.normalize(up_vector, dim=-1)[0]
+
+        R_smplx_to_world = rotation_from_a_to_b(up_vector.to(device), -self.world_up_vector.float().to(device))
+
+        mesh = (R_smplx_to_world @ mesh.squeeze().transpose(-1, -2)).transpose(-1, -2)
+
+        return mesh
 
     def sample_gaussians_from_points(self, query_points, N=100): 
         """ 
@@ -2170,8 +2483,14 @@ class ScPanel:
         return median_dist
 
     def calculate_ref_distance(self):
-        center_point = (np.array(self.start_point.value) + np.array(self.end_point.value)) / 2
-        self.ref_dist = point_to_plane_distance(center_point, np.concatenate([self.world_up_vector, [self.plane_offset]]))
+        # center_point = (np.array(self.start_point.value) + np.array(self.end_point.value)) / 2
+        # self.ref_dist = point_to_plane_distance(center_point, np.concatenate([self.world_up_vector, [self.plane_offset]]))
+        if self.smplx_scale is not None:
+            self.ref_dist = self.smplx_scale / 2
+        
+        if self.ref_dist is None:
+            self.ref_dist = 0.5
+
         return self.ref_dist
 
 def depth_to_pc(depth_map, K, R_c2w=None, t_c2w=None, screen_pos=None):

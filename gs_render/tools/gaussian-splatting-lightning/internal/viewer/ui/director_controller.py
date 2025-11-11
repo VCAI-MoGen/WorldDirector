@@ -53,13 +53,16 @@ class DirectorController:
 
         if self.director.control_cfg.visualize_output:
             self.visualize_cam_output(out['raw_gen_samples'], padding_mask[None])
-
+        
         # ===== Rendering Video =====
         self.render_video(client)
         
         self.is_generating_cam_params = False
         print("It took", time.time() - start_time)
     
+    def render_masked_human_video(self):
+        self.remote_extract_video(self.get_root_path())
+
     def generate_cam_params_and_video(self, client):
         if self.is_generating_cam_params:
             print("Already Generating")
@@ -89,7 +92,7 @@ class DirectorController:
                 video_name += f"_{var_name}_{ctrl[var_name]}"
         video_name += '.mp4'
 
-        remote_extract_video(self.get_root_path(), human_render_video_name=video_name)
+        self.remote_extract_video(self.get_root_path(), human_render_video_name=video_name)
 
         self.is_generating_cam_params = False
         print("It took", time.time() - start_time)
@@ -120,7 +123,9 @@ class DirectorController:
 
         self.update_camera(client, cameras[0])
 
-    # region ========== Interface ==========
+        self.run_difix()
+
+    # region ============= Interface =============
     def set_path(self, split):
         self.sc_panel.set_path(split)
 
@@ -170,16 +175,22 @@ class DirectorController:
         return self.sc_panel.render(cameras=cameras, render_mode=render_mode, optimizable=optimizable)
 
     def render_smplx_at_3d_position(self, points_world, R_w2c, t_w2c, focal, princpt, img, smplx_scale=1.0, smplx_up_vector=torch.tensor([0.0, 0.0, 1.0])):
-        return self.sc_panel.render_smplx_at_3d_position(points_world, R_w2c, t_w2c, focal, princpt, img, smplx_scale=smplx_scale, smplx_up_vector=smplx_up_vector)
+        return self.sc_panel.render_smplx_at_3d_position(points_world, R_w2c, t_w2c, focal, princpt, img, smplx_scale=smplx_scale)
+    
+    def run_difix(self):
+        self.sc_panel.run_difix
+
+    def remote_extract_video(self, root_path=None, video_name=None):
+        remote_extract_video(root_path, video_name)
     # endregion
 
-    # ========== Custom Guidance ==========
+    # region ========== Custom Guidance ==========
 
     def init_director(self):
         self.set_path('traj')
 
         print("Remote Generating Cam Traj")
-        self.director = RemoteDirector()
+        self.director = RemoteDirector(self.get_root_path())
 
         self.director.diffuser.register_cfg_callback(self.get_scene_aware_grad)
         self.director.diffuser.register_full_step_guidance_callback(self.get_human_aware_grad)
@@ -564,7 +575,9 @@ class DirectorController:
 
         return grad
 
-    # ===== Camera Pose Priors =====
+    # endregion
+
+    # region ========= Camera Pose Priors ========
 
     def get_camera_start_pose_prior(self):
         return self.get_camera_pose_prior(0, distance=2*self.director.smplx_scale, target="upper_body")
@@ -749,7 +762,9 @@ class DirectorController:
 
         return target_positions, heading_vectors
 
-    # ===== Debugging and Visualization =====
+    # endregion
+
+    # region ==== Debugging and Visualization ====
 
     def debug_cam_change(self, cam_feat, next_cam_feat, K, stop=1, data=None):
         device = cam_feat.device
@@ -934,7 +949,9 @@ class DirectorController:
             point_shape='circle'
         )
 
-# ===== Utils =====
+    # endregion
+
+# region ========= Utils =========
 
 def roll_axis_and_angle(R, world_up=None, w2c=False, eps=1e-8):
     """
@@ -1153,7 +1170,9 @@ def build_single_camera(R, t, K):
 
     return cameras[0]
 
-# ====================
+# endregion
+
+# region ===== Custom Utils ======
 
 def margin_range_loss(x, lower=None, upper=None, margin=0.0):
     loss = 0
@@ -1194,3 +1213,6 @@ def scaled_margin_range_loss(x, lower=None, upper=None, margin=0.0):
         loss += upper_loss / scale
 
     return loss
+
+# endregion
+
