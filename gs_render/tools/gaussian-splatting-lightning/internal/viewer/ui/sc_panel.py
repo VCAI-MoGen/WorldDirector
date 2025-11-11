@@ -649,10 +649,6 @@ class ScPanel:
             )
             @save_up_vector_button.on_click
             def _(event: viser.GuiEvent) -> None:
-                if self.world_up_vector is None:
-                    print("No up vector defined")
-                    return
-            
                 start_point = np.array(self.start_point.value)
                 end_point = np.array(self.end_point.value)
                 center_point = (start_point + end_point) / 2
@@ -2230,7 +2226,7 @@ class ScPanel:
         mesh_cam = mesh_cam - root_cam[:, None, :]
         kpt_cam = kpt_cam - root_cam[:, None, :]
 
-        up_vector_from_world = torch.einsum('nij,nj->ni', R_w2c, world_up_vector.repeat(N, 1))
+        up_vector_from_world = torch.einsum('nij,nj->ni', R_w2c, world_up_vector.float().repeat(N, 1))
         up_vector_from_world = torch.nn.functional.normalize(up_vector_from_world, dim=-1)
         cam_up_vector = torch.tensor([0., 1., 0.], device=device).expand(N, -1)
 
