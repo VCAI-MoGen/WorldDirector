@@ -246,11 +246,12 @@ def smoothing_filter(poses, window_length):
     return clean_poses
 
 class RemoteDirector:
-    def __init__(self):
+    def __init__(self, root_path=None):
         self.diffuser, self.clip_model, self.dataset, self.device, self.control_cfg = \
             init_remote("config_remote", os.path.abspath(os.path.join(os.path.dirname(__file__), "configs")))
         
-        self.root_path = self.control_cfg.root_path
+        if root_path is None:
+            self.root_path = self.control_cfg.root_path
         self.PROMPT = self.control_cfg.prompt
         
         if self.control_cfg.random_seed:
@@ -283,7 +284,7 @@ class RemoteDirector:
         char_traj_dir = os.path.join(self.root_path, 'traj', 'smplx_optimized', 'traj_smoothed')
         source_cam_params_path = os.path.join(self.root_path, 'traj', 'cam_params_scene')
 
-        self.up_vector_path = os.path.join(self.root_path, 'up_vector.npy')
+        self.up_vector_path = os.path.join(self.root_path, 'up_vector.json')
         smplx_scale_path = os.path.join(self.root_path, 'traj', 'smplx_optimized', 'scale.json')
         with open(smplx_scale_path, 'r') as f:
             self.smplx_scale = json.load(f)[0]
@@ -319,7 +320,10 @@ class RemoteDirector:
         char_traj = char_traj - char_start
 
         # rotate scene coordinates --> director character trajectory coordinates
-        scene_up_vector = np.load(self.up_vector_path)
+        scene_up_vector = None
+        with open(self.up_vector_path, 'r') as f:
+            plane_info = json.load(f)
+            scene_up_vector = torch.tensor(plane_info[:3])
         R_scene_up_to_director_up = rotation_matrix_from_vectors(scene_up_vector, np.array([0.0, -1.0, 0.0]))
         char_traj = (R_scene_up_to_director_up @ char_traj.T).T
 

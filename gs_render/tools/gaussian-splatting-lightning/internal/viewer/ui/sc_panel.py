@@ -78,12 +78,16 @@ class ScPanel:
         self.frame_num = 81
         self.render_mode = "rgb"
         self.root_path = self.viewer.root_path
-        self.up_vector_path = os.path.join(self.root_path, 'up_vector.npy')
+        self.up_vector_path = os.path.join(self.root_path, 'up_vector.json')
         if os.path.exists(self.up_vector_path):
-            print("World up vector exists")
-            self.world_up_vector = np.load(self.up_vector_path)
+            with open(self.up_vector_path, 'r') as f:
+                plane_info = json.load(f)
+                self.world_up_vector = torch.tensor(plane_info[:3])
+                self.plane_offset = plane_info[-1]
+            print(f"World up vector exists: {self.world_up_vector.tolist()}")
         else:
             self.world_up_vector = None
+            self.plane_offset = None
     
         self.start_point_path = os.path.join(self.root_path, 'start_point.json')
         if os.path.exists(self.start_point_path):
