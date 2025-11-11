@@ -660,17 +660,17 @@ class ScPanel:
                 self.world_up_vector = torch.tensor(self.up_vector_point.value - center_point)
                 self.world_up_vector /= torch.linalg.norm(self.world_up_vector)
                 
-                ref_dist = None
+                plane_offset = None
                 if os.path.exists(self.up_vector_path):
                     with open(self.up_vector_path, 'r') as f:
                         data = json.load(f)
                     if len(data) > 3:
-                        ref_dist = data[-1]
+                        plane_offset = data[-1]
                 
                 with open(self.up_vector_path, 'w') as f:
-                    if ref_dist is None:
-                        ref_dist = 1.5
-                    json.dump(self.world_up_vector.tolist() + [ref_dist], f)
+                    if plane_offset is None:
+                        plane_offset = 0.5
+                    json.dump(self.world_up_vector.tolist() + [plane_offset], f)
 
                 print("Saved up vector :", self.world_up_vector, self.up_vector_path)
 
@@ -717,16 +717,8 @@ class ScPanel:
                 with open(self.smplx_scale_path, 'w') as f:
                     json.dump(self.smplx_scale.tolist(), f)
                     print("Saved at:", self.smplx_scale_path)
-                
-                with open(self.up_vector_path, 'r') as f:
-                    data = json.load(f)
-                    data[-1] = (self.smplx_scale / 2).item()
-                    self.ref_dist = data[-1]
 
-                with open(self.up_vector_path, 'w') as f:
-                    json.dump(data, f)
-
-                print("Saved smplx scale and ref_dist :", self.smplx_scale, self.smplx_scale_path, self.up_vector_path)
+                print("Saved smplx scale :", self.smplx_scale, self.smplx_scale_path)
 
             dump_image_for_static = self.server.gui.add_button(
                 "Dump Image (Static)",
