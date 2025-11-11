@@ -178,11 +178,27 @@ def get_parser():
         type=float,
         default=5.0,
         help="Classifier free guidance scale.")
+    # VCAI #
     parser.add_argument(
         "--scene_video",
         type=str,
         default=None,
         help="The file of the scene video. Default None.")
+    parser.add_argument(
+        "--confidence_dir_path",
+        type=str,
+        default=None,
+        help="The directory of gaussian confidence. Default None.")
+    parser.add_argument(
+        "--enhance_scene",
+        action="store_true",
+        default=False,
+        help="Whether to enhance the video by one-step denoising.")
+    parser.add_argument(
+        "--root_path",
+        default=None,
+        help="Data Path")
+    ########
     return parser
 
 
@@ -286,19 +302,42 @@ def main(args):
         use_usp=(args.ulysses_size > 1 or args.ring_size > 1),
         t5_cpu=args.t5_cpu,
     )
-
+    if args.root_path is not None:
+        root_path = args.root_path
+        args.src_video = os.path.join(root_path, 'human_masked_video.mp4')
+        if os.path.exists(os.path.join(root_path, 'human_masked_video_enhanced.mp4')):
+            args.src_video = os.path.join(root_path, 'human_masked_video_enhanced.mp4')
+        args.src_mask = os.path.join(root_path, 'mask_video.mp4')
+    
     src_video, src_mask, src_ref_images = wan_vace.prepare_source([args.src_video],
                                                                   [args.src_mask],
                                                                   [None if args.src_ref_images is None else args.src_ref_images.split(',')],
                                                                   args.frame_num, SIZE_CONFIGS[args.size], device)
-    
+    # VCAI #
     if args.scene_video is not None:
         scene_video, _, _ = wan_vace.prepare_source([args.scene_video],
                                                     [args.src_mask],
                                                     [None if args.src_ref_images is None else args.src_ref_images.split(',')],
                                                     args.frame_num, SIZE_CONFIGS[args.size], device)
+    elif args.enhance_scene:
+        scene_video_path = os.path.join(root_path, 'scene_render_difix.mp4')
+        src_ref_images = [None]
+        scene_video, _, _ = wan_vace.prepare_source([scene_video_path],
+                                                    [args.src_mask],
+                                                    [None if args.src_ref_images is None else args.src_ref_images.split(',')],
+                                                    args.frame_num, SIZE_CONFIGS[args.size], device)
     else:
         scene_video = None
+    
+    if args.confidence_dir_path is not None:
+        import numpy as np
+        confidence = [np.load(os.path.join(args.confidence_dir_path, f'{i}.npy')) for i, confidence_path in enumerate(os.listdir(args.confidence_dir_path))]
+        confidence = torch.tensor(confidence, device=device, dtype=src_video[0].dtype) # (N, H, W, 1)
+        confidence = confidence.permute(3, 0, 1, 2) # (1, N, H, W)
+    
+    else:
+        confidence = None
+    ########
 
     logging.info(f"Generating video...")
     video = wan_vace.generate(
@@ -314,7 +353,10 @@ def main(args):
         guide_scale=args.sample_guide_scale,
         seed=args.base_seed,
         offload_model=args.offload_model,
-        scene_frames=scene_video)
+        # VCAI #
+        scene_frames=scene_video,
+        confidence_map=confidence,
+        enhance_scene=args.enhance_scene)
 
     ret_data = {}
     if rank == 0:
@@ -336,6 +378,18 @@ def main(args):
             nrow=1,
             normalize=True,
             value_range=(-1, 1))
+        if root_path is not None:
+            if args.enhance_scene:
+                save_file = os.path.join(root_path, "scene_render_difix_enhanced.mp4")
+            else:
+                save_file = os.path.join(root_path, "video.mp4")
+            cache_video(
+                tensor=video[None],
+                save_file=save_file,
+                fps=cfg.sample_fps,
+                nrow=1,
+                normalize=True,
+                value_range=(-1, 1))
         logging.info(f"Saving generated video to {save_file}")
         ret_data['out_video'] = save_file
 

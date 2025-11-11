@@ -6,9 +6,12 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import imageio.v3 as iio
 import torch
+import torchvision.transforms as T
 from torchmetrics import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics.multimodal.clip_score import CLIPScore
 from tqdm import tqdm
+from lang_sam import LangSAM
+import imageio
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -54,6 +57,32 @@ N = len(generated_video_path_list)
 psnr = PeakSignalNoiseRatio(data_range=1.0).to(device)
 ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
 clip = CLIPScore(model_name_or_path="openai/clip-vit-base-patch16").to(device)
+langsam = LangSAM(sam_type="sam2.1_hiera_large")
+to_pil = T.ToPILImage()
+
+def predict_human_masks(video_tensor, batch_size=41):
+    """
+    video_tensor    : (N, C, H, W)
+    """
+    N, C, H, W = video_tensor.shape
+    video_pil = [to_pil(frame) for frame in video_tensor]
+    
+    human_masks = []
+    for idx in range(0, len(video_pil), batch_size):
+        start_idx = idx
+        end_idx = idx + batch_size if idx + batch_size < len(video_pil) else len(video_pil)
+        input_image_pil = video_pil[start_idx:end_idx]
+        results = langsam.predict(input_image_pil, ["human. man. woman"] * len(input_image_pil))
+        
+        for result in results:
+            mask = torch.zeros((H, W, 1)).bool()
+            for pred in result['masks']:
+                pred_mask = torch.tensor(pred[:, :, None]).to(mask)
+                mask = torch.logical_or(mask, pred_mask)
+            mask = torch.logical_not(mask)
+            human_masks.append(mask.int())
+    human_masks = torch.stack(human_masks).permute(0, 3, 1, 2).repeat(1, 3, 1, 1).to(device)
+    return human_masks
 
 eval_results = {}
 psnr_list = []
@@ -74,9 +103,43 @@ with torch.no_grad():
         B = generated_video.shape[0]
 
         # Scene Consistency between pred and target
-        psnr_value = psnr(generated_video_norm, scene_render_video_norm).item()
-        ssim_value = ssim(generated_video_norm, scene_render_video_norm).item()
+        generated_video_human_masks = predict_human_masks(generated_video_norm)
+        generated_video_masked = generated_video_norm * generated_video_human_masks
+        scene_render_video_masked = scene_render_video_norm * generated_video_human_masks
 
+        
+        """
+        import numpy as np
+        # float -> uint8 변환
+        video_np = (generated_video_masked * 255).byte().cpu().numpy()  # (N, C, H, W)
+
+        # shape 변환: imageio는 (H, W, C)
+        video_np = np.transpose(video_np, (0, 2, 3, 1))  # (N, H, W, C)
+
+        # 비디오 저장
+        writer = imageio.get_writer(f'generated_{idx}.mp4', fps=16)
+        for frame in video_np:
+            writer.append_data(frame)
+        writer.close()
+
+        # float -> uint8 변환
+        video_np = (scene_render_video_masked * 255).byte().cpu().numpy()  # (N, C, H, W)
+
+        # shape 변환: imageio는 (H, W, C)
+        video_np = np.transpose(video_np, (0, 2, 3, 1))  # (N, H, W, C)
+
+        # 비디오 저장
+        writer = imageio.get_writer(f'scene_{idx}.mp4', fps=16)
+        for frame in video_np:
+            writer.append_data(frame)
+        writer.close()
+        """
+
+        psnr_value = psnr(generated_video_masked, scene_render_video_masked).item()
+        ssim_value = ssim(generated_video_norm, scene_render_video_norm).item()
+        print(psnr_value)
+        print(ssim_value)
+        
         # Temporal Consistency between consecutive frames
         clip_i_temporal = clip(generated_video[:-1], generated_video[1:]).item()
 
@@ -93,7 +156,7 @@ eval_results['ssim'] = [sum(ssim_list) / N, [{"video_path": video_path, "video_r
 eval_results['clip_i_temporal'] = [sum(clip_i_temporal_list) / N, [{"video_path": video_path, "video_results": video_results} for video_path, video_results in zip(generated_video_path_list, clip_i_temporal_list)]]
 eval_results['clip_score'] = [sum(clip_score_list) / N, [{"video_path": video_path, "video_results": video_results} for video_path, video_results in zip(generated_video_path_list, clip_score_list)]]
 
-json_name = f'results_{datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}.json'
+json_name = f'results_{datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}_exculding_vbench.json'
 json_path = os.path.join(result_dir, json_name)
 with open(json_path, 'w') as f:
     json.dump(eval_results, f, indent=2, ensure_ascii=False)

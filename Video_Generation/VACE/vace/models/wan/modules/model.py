@@ -150,6 +150,7 @@ class VaceWanModel(WanModel):
         vace_context_scale=1.0,
         clip_fea=None,
         y=None,
+        enrich=None
     ):
         r"""
         Forward pass through the diffusion model
