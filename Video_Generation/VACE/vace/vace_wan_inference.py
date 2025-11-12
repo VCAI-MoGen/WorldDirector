@@ -14,6 +14,7 @@ warnings.filterwarnings('ignore')
 import torch, random
 import torch.distributed as dist
 from PIL import Image
+import json
 
 import wan
 from wan.utils.utils import cache_video, cache_image, str2bool
@@ -308,6 +309,11 @@ def main(args):
         if os.path.exists(os.path.join(root_path, 'human_masked_video_enhanced.mp4')):
             args.src_video = os.path.join(root_path, 'human_masked_video_enhanced.mp4')
         args.src_mask = os.path.join(root_path, 'mask_video.mp4')
+        data_path = os.path.join(root_path, '../data.json')
+        with open(data_path, 'r') as f:
+            data = json.load(f)
+        if 'ref_image' in data:
+            args.src_ref_images = data['ref_image']
     
     src_video, src_mask, src_ref_images = wan_vace.prepare_source([args.src_video],
                                                                   [args.src_mask],
