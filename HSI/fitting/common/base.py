@@ -74,7 +74,7 @@ class Trainer(Base):
         self.itr_per_epoch = math.ceil(len(self.trainset_loader) / self.cfg.num_gpus / self.cfg.batch_size)
         self.batch_generator = DataLoader(dataset=self.trainset_loader, batch_size=self.cfg.num_gpus*self.cfg.batch_size, shuffle=True, num_workers=self.cfg.num_thread)
         self.smplx_params = self.trainset_loader.smplx_params
-        self.smplx_shape_param = self.trainset_loader.smplx_shape_param
+        self.sdf_dict = self.trainset_loader.sdf_dict
 
     def _make_model(self):
         model = get_model()

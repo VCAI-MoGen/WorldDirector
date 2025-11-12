@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from nets.loss import PoseLoss, PoseReg
+from nets.loss import PoseLoss, PoseReg, ColLoss
 from utils.smpl_x import smpl_x
 from pytorch3d.transforms import rotation_6d_to_matrix, matrix_to_axis_angle
 from pytorch3d.structures import Meshes
@@ -15,6 +15,7 @@ class Model(nn.Module):
         self.smplx_layer = copy.deepcopy(smpl_x.layer['neutral']).cuda()
         self.pose_loss = PoseLoss()
         self.pose_reg = PoseReg()
+        self.col_loss = ColLoss()
 
     def process_input_smplx_param(self, smplx_param):
         out = {}
@@ -81,7 +82,7 @@ class Model(nn.Module):
         outputs = rasterizer(mesh).zbuf[:,None,:,:,0]
         return outputs
 
-    def forward(self, smplx_inputs, data, return_output):
+    def forward(self, smplx_inputs, sdf_input, data, return_output):
         smplx_inputs = self.process_input_smplx_param(smplx_inputs) 
 
         # get coordinates from optimizable parameters
@@ -97,14 +98,18 @@ class Model(nn.Module):
         
         # loss functions
         loss = {}
-        if cfg.use_kpt_loss:
-            loss['smplx_kpt_proj'] = torch.abs(smplx_kpt_proj - data['kpt_img']) * data['kpt_valid'] * cfg.kpt_loss_weight
+        loss['smplx_kpt_proj'] = torch.abs(smplx_kpt_proj - data['kpt_img']) * data['kpt_valid'] 
         
         # rasterize depth map and compute depthmap loss
         if cfg.use_depthmap_loss:
             smplx_depth = self.render_depth(smplx_mesh_cam, smpl_x.face, data['cam_param_depth_vggt'], cfg.depth_render_shape)
             loss['depth'] = torch.abs(smplx_depth - data['depth_vggt']) * (smplx_depth > 0) * (data['depth_vggt'] > 0) * (data['mask'] > 0) * cfg.depth_loss_weight
-            
+        
+        # avoid collision between human and scene
+        smplx_mesh_world = torch.bmm(data['cam_param']['R'].permute(0,2,1), (smplx_mesh_cam - data['cam_param']['t'][:,None,:]).permute(0,2,1)).permute(0,2,1).contiguous()
+        if cfg.use_col_loss and sdf_input['valid']:
+            loss['col'] = self.col_loss(sdf_input, smplx_mesh_world) * cfg.col_loss_weight
+           
         # For Deubgging
         
         """
@@ -185,6 +190,7 @@ class Model(nn.Module):
             # outputs
             out = {}
             out['smplx_mesh_cam'] = smplx_mesh_cam
+            out['smplx_mesh_world'] = smplx_mesh_world
             out['smplx_trans'] = smplx_trans - smplx_root_cam
             out['human_traj'] = traj
             
