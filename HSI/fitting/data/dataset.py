@@ -25,7 +25,7 @@ class Dataset(torch.utils.data.Dataset):
                         'L_Wrist_Hand', 'L_Thumb_1', 'L_Thumb_2', 'L_Thumb_3', 'L_Thumb_4', 'L_Index_1', 'L_Index_2', 'L_Index_3', 'L_Index_4', 'L_Middle_1', 'L_Middle_2', 'L_Middle_3', 'L_Middle_4', 'L_Ring_1', 'L_Ring_2', 'L_Ring_3', 'L_Ring_4', 'L_Pinky_1', 'L_Pinky_2', 'L_Pinky_3', 'L_Pinky_4', # left hand
                         'R_Wrist_Hand', 'R_Thumb_1', 'R_Thumb_2', 'R_Thumb_3', 'R_Thumb_4', 'R_Index_1', 'R_Index_2', 'R_Index_3', 'R_Index_4', 'R_Middle_1', 'R_Middle_2', 'R_Middle_3', 'R_Middle_4', 'R_Ring_1', 'R_Ring_2', 'R_Ring_3', 'R_Ring_4', 'R_Pinky_1', 'R_Pinky_2', 'R_Pinky_3', 'R_Pinky_4') # right hand
                     }
-        self.cam_params, self.kpts, self.depth_paths, self.smplx_params, self.smplx_shape_param, self.frame_idx_list, self.img_paths, self.depth_vggt_paths = self.load_data()
+        self.cam_params, self.kpts, self.mask_paths, self.smplx_params, self.smplx_shape_param, self.frame_idx_list, self.img_paths, self.depth_vggt_paths = self.load_data()
         self.get_smplx_trans_init() # get initial smplx translation 
 
     def load_data(self):
@@ -47,14 +47,12 @@ class Dataset(torch.utils.data.Dataset):
             kpt = change_kpt_name(kpt, self.kpt['name'], smpl_x.kpt['name'])
             kpts[frame_idx] = kpt
 
-        # sapiens depth map paths
-        depth_paths = {}
-        depth_path_list = glob(osp.join(self.root_path, 'depths', '*.npy'))
-        for depth_path in depth_path_list:
-            if '_mask.npy' in depth_path:
-                continue
-            frame_idx = int(depth_path.split('/')[-1][:-4])
-            depth_paths[frame_idx] = depth_path
+        # mask paths
+        mask_paths = {}
+        mask_path_list = glob(osp.join(self.root_path, 'masks', '*.png'))
+        for mask_path in mask_path_list:
+            frame_idx = int(mask_path.split('/')[-1][:-4])
+            mask_paths[frame_idx] = mask_path
 
         # vggt dpeth map paths 
         depth_vggt_paths = {}
@@ -78,7 +76,7 @@ class Dataset(torch.utils.data.Dataset):
         for frame_idx in frame_idx_list:
             img_path = osp.join(self.root_path, 'frames', str(frame_idx) + '.png')
             img_paths[frame_idx] = img_path
-        return cam_params, kpts, depth_paths, smplx_params, smplx_shape_param, frame_idx_list, img_paths, depth_vggt_paths
+        return cam_params, kpts, mask_paths, smplx_params, smplx_shape_param, frame_idx_list, img_paths, depth_vggt_paths
 
     def get_smplx_trans_init(self):
         for i in range(len(self.frame_idx_list)):
@@ -118,34 +116,26 @@ class Dataset(torch.utils.data.Dataset):
         kpt_img_xy1 = np.concatenate((kpt_img, np.ones_like(kpt_img[:,:1])),1)
         kpt_img = np.dot(img2bb_trans, kpt_img_xy1.transpose(1,0)).transpose(1,0)
 
-        # load depth (by sapiens and vggt)
-        # vggt depth shape is different with original image shape. we should handle this.
-        depth = np.load(self.depth_paths[frame_idx])
-        depth_mask = np.load(self.depth_paths[frame_idx][:-4] + '_mask.npy').astype(np.float32)
+        # load depth (by vggt)
+        depth_mask = cv2.imread(self.mask_paths[frame_idx])[:, :, 0] / 255
         depth_vggt = np.load(self.depth_vggt_paths[frame_idx])
         depth_vggt_mask = cv2.resize(depth_mask, (depth_vggt.shape[1], depth_vggt.shape[0]), interpolation=cv2.INTER_NEAREST)
 
-        origin_h, origin_w = depth.shape
-        vggt_h, vggt_w = depth_vggt.shape
+        H, W = depth_vggt.shape
 
         kpt_img_vggt = self.kpts[frame_idx][:,:2]
-        kpt_img_vggt[:, 0] = kpt_img_vggt[:, 0] /  origin_w * vggt_w
-        kpt_img_vggt[:, 1] = kpt_img_vggt[:, 1] /  origin_h * vggt_h
+        kpt_img_vggt[:, 0] = kpt_img_vggt[:, 0]
+        kpt_img_vggt[:, 1] = kpt_img_vggt[:, 1]
         bbox_vggt = get_bbox(kpt_img_vggt, kpt_valid[:,0])
         bbox_vggt = set_aspect_ratio(bbox_vggt, aspect_ratio=self.cfg.kpt_proj_shape[1]/self.cfg.kpt_proj_shape[0])
         _, img2bb_trans, bb2img_trans = get_patch_img(np.ones((10,10,3),dtype=np.uint8), bbox_vggt, self.cfg.kpt_proj_shape) # get transformation matrix with dummy image
         kpt_img_vggt_xy1 = np.concatenate((kpt_img_vggt, np.ones_like(kpt_img_vggt[:,:1])),1)
         kpt_img_vggt = np.dot(img2bb_trans, kpt_img_vggt_xy1.transpose(1,0)).transpose(1,0)
 
-        _, img2bb_trans, bb2img_trans = get_patch_img(np.ones((10,10,3),dtype=np.uint8), bbox, self.cfg.depth_render_shape) # get transformation matrix with dummy image
-        depth = cv2.warpAffine(depth, img2bb_trans, (self.cfg.depth_render_shape[1], self.cfg.depth_render_shape[0]), flags=cv2.INTER_LINEAR)
-        depth_mask = cv2.warpAffine(depth_mask, img2bb_trans, (self.cfg.depth_render_shape[1], self.cfg.depth_render_shape[0]), flags=cv2.INTER_LINEAR)
-        human_mask = (depth_mask == 1)
-        depth = (depth * (depth_mask==1))[None,:,:]
-
         _, img2bb_trans, bb2img_trans = get_patch_img(np.ones((10,10,3),dtype=np.uint8), bbox_vggt, self.cfg.depth_render_shape) # get transformation matrix with dummy image
         depth_vggt = cv2.warpAffine(depth_vggt, img2bb_trans, (self.cfg.depth_render_shape[1], self.cfg.depth_render_shape[0]), flags=cv2.INTER_LINEAR)
         depth_vggt_mask = cv2.warpAffine(depth_vggt_mask, img2bb_trans, (self.cfg.depth_render_shape[1], self.cfg.depth_render_shape[0]), flags=cv2.INTER_LINEAR)
+        human_mask = (depth_vggt_mask == 1)
         depth_vggt = (depth_vggt * (depth_vggt_mask==1))[None,:,:]
 
         # smplx parameter
@@ -154,15 +144,13 @@ class Dataset(torch.utils.data.Dataset):
         # modify intrincis
         focal = self.cam_params[frame_idx]['focal']
         princpt = self.cam_params[frame_idx]['princpt']
-        focal_vggt = np.array([focal[0] / origin_w * vggt_w, focal[1] / origin_h * vggt_h], dtype=np.float32)
-        princpt_vggt = np.array([vggt_w // 2, vggt_h // 2],  dtype=np.float32)
         focal_kpt = np.array([focal[0] / bbox[2] * self.cfg.kpt_proj_shape[1], focal[1] / bbox[3] * self.cfg.kpt_proj_shape[0]], dtype=np.float32)
         princpt_kpt = np.array([(princpt[0] - bbox[0]) / bbox[2] * self.cfg.kpt_proj_shape[1], (princpt[1] - bbox[1]) / bbox[3] * self.cfg.kpt_proj_shape[0]], dtype=np.float32)
         focal_depth = np.array([focal[0] / bbox[2] * self.cfg.depth_render_shape[1], focal[1] / bbox[3] * self.cfg.depth_render_shape[0]], dtype=np.float32)
         princpt_depth = np.array([(princpt[0] - bbox[0]) / bbox[2] * self.cfg.depth_render_shape[1], (princpt[1] - bbox[1]) / bbox[3] * self.cfg.depth_render_shape[0]], dtype=np.float32)
 
-        focal_vggt = np.array([focal[0] / origin_w * vggt_w, focal[1] / origin_h * vggt_h])
-        princpt_vggt = np.array([princpt[0] / origin_w * vggt_w, princpt[1] / origin_h * vggt_h])
+        focal_vggt = np.array([focal[0], focal[1]])
+        princpt_vggt = np.array([princpt[0], princpt[1]])
         focal_kpt_vggt = np.array([focal_vggt[0] / bbox_vggt[2] * self.cfg.kpt_proj_shape[1], focal_vggt[1] / bbox_vggt[3] * self.cfg.kpt_proj_shape[0]], dtype=np.float32)
         princpt_kpt_vggt = np.array([(princpt_vggt[0] - bbox_vggt[0]) / bbox_vggt[2] * self.cfg.kpt_proj_shape[1], (princpt_vggt[1] - bbox_vggt[1]) / bbox_vggt[3] * self.cfg.kpt_proj_shape[0]], dtype=np.float32)
         focal_depth_vggt = np.array([focal_vggt[0] / bbox_vggt[2] * self.cfg.depth_render_shape[1], focal_vggt[1] / bbox_vggt[3] * self.cfg.depth_render_shape[0]], dtype=np.float32)
@@ -178,7 +166,6 @@ class Dataset(torch.utils.data.Dataset):
                 'kpt_img_vggt': kpt_img_vggt,
                 'kpt_valid': kpt_valid, 
                 'bbox': bbox_orig,
-                'depth': depth, 
                 'depth_vggt': depth_vggt,
                 'mask': human_mask, 
                 'smplx_param': smplx_param, 

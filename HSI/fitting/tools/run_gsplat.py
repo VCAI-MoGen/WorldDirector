@@ -26,6 +26,20 @@ else:
 target_object = args.target_object
 vis_all = args.vis_all
 
+cmd = 'python extract_frames.py --root_path ' + root_path
+print(cmd)
+result = os.system(cmd)
+if (result != 0):
+    print('something bad happened when extracting frames. terminate the script.')
+    sys.exit()
+
+cmd = 'python generate_frame_list_all.py --root_path ' + root_path
+print(cmd)
+result = os.system(cmd)
+if (result != 0):
+    print('something bad happened when generating frame list. terminate the script.')
+    sys.exit()
+
 # remove unnecessary frames
 with open(osp.join(root_path, 'frame_list_all.txt')) as f:
     frame_idx_list = [int(x) for x in f.readlines()]
@@ -91,16 +105,6 @@ if (result != 0):
     print('something bad happened when running segment-anything. terminate the script.')
     sys.exit()
 os.chdir('../')
-
-# sapiens (get depth using binary masks from Segment Anything)
-os.chdir('./sapiens/lite/scripts/demo/torchscript')
-cmd = 'python run_sapiens_depth.py --root_path ' + root_path + ' --vis_format video'
-print(cmd)
-result = os.system(cmd)
-if (result != 0):
-    print('something bad happened when running sapiens depth. terminate the script.')
-    sys.exit()
-os.chdir('../../../../../')
 
 # fit depth
 os.chdir('../main')
