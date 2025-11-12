@@ -19,7 +19,7 @@ import torch.nn.functional as F
 import math
 
 from pytorch3d.structures import Meshes
-from pytorch3d.io import load_ply
+from pytorch3d.io import load_ply, save_obj
 from pytorch3d.renderer import (
 PointLights,
 PerspectiveCameras,
@@ -125,17 +125,18 @@ class ScPanel:
         self._setup_vis_folder()
 
         self.up_vector_path = os.path.join(self.root_path, 'up_vector.json')
-        if os.path.exists(self.up_vector_path):
-            with open(self.up_vector_path, 'r') as f:
-                plane_info = json.load(f)
-                self.world_up_vector = torch.tensor(plane_info[:3])
-                self.plane_offset = plane_info[-1]
-                self.ref_dist = self.calculate_ref_distance()
-            print(f"World up vector exists: {self.world_up_vector.tolist()}")
-        else:
-            self.world_up_vector = None
-            self.plane_offset = None
-            self.ref_dist = 2.0
+        # if os.path.exists(self.up_vector_path):
+        #     with open(self.up_vector_path, 'r') as f:
+        #         plane_info = json.load(f)
+        #         self.world_up_vector = torch.tensor(plane_info[:3])
+        #         self.plane_offset = plane_info[-1]
+        #         self.ref_dist = self.calculate_ref_distance()
+        #     print(f"World up vector exists: {self.world_up_vector.tolist()}")
+        # else:
+
+        self.world_up_vector = torch.tensor([0.0, 1.0, 0.0])
+        self.plane_offset = 0.0
+        self.ref_dist = 0.85
 
     def _setup_root_path(self):
         root_path_input = self.server.gui.add_text(
@@ -441,7 +442,7 @@ class ScPanel:
                 # Set data type for setting path
                 self.set_path('static')
 
-                cameras, _, _ = self.optimize_cam_params()
+                cameras, _, _, _ = self.optimize_cam_params()
                 self.update_camera(client, cameras[0])
                 render_wh = self.render_wh
 
@@ -656,7 +657,11 @@ class ScPanel:
                 # Dump for traj dir
                 self.set_path('traj')
 
-                cameras, render, bbox_mask = self.optimize_cam_params(smplx_scale)
+                cameras, render, bbox_mask, loss = self.optimize_cam_params(look_dir_sign=1, smplx_scale=smplx_scale)
+                if loss > 1e-2:
+                    cameras2, render2, bbox_mask2, loss2 = self.optimize_cam_params(look_dir_sign=-1, smplx_scale=smplx_scale)
+                    if loss2 < loss:
+                        cameras, render, bbox_mask = cameras2, render2, bbox_mask2
                 self.update_camera(client, cameras[0])
                 start_image = render[0].detach().cpu().numpy().copy().astype(np.uint8)
                 end_image = render[0].detach().cpu().numpy().copy().astype(np.uint8)
@@ -1520,11 +1525,30 @@ class ScPanel:
             R=R,
             T=T,
             znear=client.camera.near,
+            # znear=1e-3,
             zfar=client.camera.far,
             fov=fov,  # radians
             degrees=False,
             aspect_ratio=1.0
         )
+
+        # Debugging
+        """
+        from pytorch3d.transforms import Transform3d
+
+        transform_matrix = torch.eye(4)
+        transform_matrix[:3, :3] = R
+        transform_matrix[:3, 3] = T
+        T = Transform3d(matrix=torch.tensor(transform_matrix.T).to(self.mesh_model.verts_padded()))
+        transformed_verts = T.transform_points(self.mesh_model.verts_padded()).to(self.mesh_model.verts_padded())
+        self.mesh_model = self.mesh_model.update_padded(transformed_verts)
+        verts = self.mesh_model.verts_list()[0]   # (V, 3)
+        faces = self.mesh_model.faces_list()[0]   # (F, 3)
+        save_obj("output.obj", verts, faces)
+        assert 0
+        """
+
+
         lights = PointLights(device=device)
         shader = SoftPhongShader(device=device, cameras=cameras_pt3d, lights=lights)
         raster_settings = RasterizationSettings(
@@ -1540,11 +1564,11 @@ class ScPanel:
             shader=shader,
         )
         if render_mode == "rgb":
-            if optimizable is False:
+            if optimizable:
                 renders = renderer(self.mesh_model)[..., :3]   # (N, H, W, 3)
                 renders = torch.clamp(renders, 0.0, 1.0)
                 # Render Debugging
-                
+                """
                 imageio.imwrite('render.png', (renders[0] * 255).detach().cpu().numpy().astype(np.uint8))
                 fragments = renderer.rasterizer(self.mesh_model)
                 depths = fragments.zbuf.squeeze(-1) # (N, H, W)
@@ -1567,7 +1591,7 @@ class ScPanel:
                 renders = np.array(renders)
                 self.set_visible_only_scene(False)
                 imageio.imwrite('render_viser.png', renders[0, :, :, :].astype(np.uint8))
-                
+                """
                 ###
             else:
                 self.set_visible_only_scene(True)
@@ -1604,7 +1628,7 @@ class ScPanel:
         
         return renders
 
-    def optimize_cam_params(self, smplx_scale=None, look_target=None, device="cuda:0"):
+    def optimize_cam_params(self, look_dir_sign=1, smplx_scale=None, look_target=None, device="cuda:0"):
         data_type = self.current_data_type
 
         cameras = None
@@ -1614,7 +1638,7 @@ class ScPanel:
         maximum_mask_ratio = 0.3
         minimum_mask_ratio = 0.15
         camera_human_elevation_min_degree = 50.0
-        camera_human_elevation_max_degree = 60.0
+        camera_human_elevation_max_degree = 75.0
 
         pixel_margin = 50.0
 
@@ -1656,12 +1680,13 @@ class ScPanel:
                 initial_point = end_point
             else:
                 initial_point = center_point
-            initial_alpha = look_dir * self.ref_dist * 2.5 + up_vector
+            initial_alpha = look_dir_sign * look_dir * self.ref_dist * 2.5 + up_vector
             lr = 1e-2
         with torch.autograd.detect_anomaly():
             alpha = torch.tensor(initial_alpha, device=device, requires_grad=True)
             optimizer = torch.optim.Adam([alpha], lr=lr)
             scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.5)
+            scaler = torch.cuda.amp.GradScaler()
 
             pbar = trange(1000, desc="Training", dynamic_ncols=True)
             for step in pbar:
@@ -1721,7 +1746,7 @@ class ScPanel:
                     t_batch = t.repeat(N, 1)
                     focal_batch = torch.cat((fx, fy), dim=-1).repeat(N, 1)
                     princpt_batch = torch.cat((cx, cy), dim=-1).repeat(N, 1)
-                    img = torch.tensor(self.render(cameras, render_mode="rgb")).to(pc_cam)
+                    img = torch.ones((N, height[0], width[0], 3)).to(pc_cam)
                     human_renders, human_depths, human_masks, bb = self.render_smplx_at_3d_position(points_world, R_batch, t_batch, focal_batch, princpt_batch, img, smplx_scale)
                     bbox_masks, bboxes = mask_to_bbox_mask(human_masks)
                     bbox_masks /= 255.0
@@ -1729,6 +1754,23 @@ class ScPanel:
                     target_depth = depth.repeat(N, 1, 1).unsqueeze(-1)
                     target_depth[human_masks <= 0] = 0
                     human_depths[human_masks <= 0] = 0
+
+                    """
+                    for i in range(target_depth.shape[0]):
+                        target_depth_vis = target_depth[i].clone()
+                        target_depth_vis[target_depth[i] > 0] = (target_depth_vis[target_depth[i] > 0] - target_depth_vis[target_depth[i] > 0].min())
+                        target_depth_vis[target_depth[i] > 0] = target_depth_vis[target_depth[i] > 0] / target_depth_vis[target_depth[i] > 0].max() * 255
+                        human_depth_vis = human_depths[i].clone()
+                        human_depth_vis[human_depths[i] > 0] = (human_depth_vis[human_depths[i] > 0] - human_depth_vis[human_depths[i] > 0].min())
+                        human_depth_vis[human_depths[i] > 0] = human_depth_vis[human_depths[i] > 0] / human_depth_vis[human_depths[i] > 0].max() * 255
+                        cv2.imwrite(f'scene_depth_{i}.png', target_depth_vis.repeat(1, 1, 3).detach().cpu().numpy())
+                        cv2.imwrite(f'human_depth_{i}.png', human_depth_vis.repeat(1, 1, 3).detach().cpu().numpy())
+
+                    print(f"Depth min: {target_depth[target_depth>0].min()}")
+                    print(f"Depth max: {target_depth[target_depth>0].max()}")
+                    print(f"Human depth min: {human_depths[human_depths>0].min()}")
+                    print(f"Human depth max: {human_depths[human_depths>0].max()}")
+                    """
 
                     total_pixel = width * height
 
@@ -1758,10 +1800,22 @@ class ScPanel:
                                                             margin=0.0).mean()
                     loss_human_mask_visible = margin_range_loss(human_depths, \
                                                                 lower=torch.zeros(human_depths.shape).to(device), \
-                                                            upper=target_depth, \
+                                                            upper=target_depth.detach(), \
                                                             margin=0.0).mean()
                     
-                    loss += 10 * loss_camera_over_points + loss_human_mask_in_image + loss_human_mask_area + 10 * loss_human_mask_visible
+                    # screen_coord_x, screen_coord_y = pc_cam[:, 0], pc_cam[:, 1]
+                    # pc_in_image = (screen_coord_x >= 0).all() & (screen_coord_x < self.render_wh[0]).all() & (screen_coord_y >= 0).all() & (screen_coord_y < self.render_wh[1]).all() & (pc_cam[:, 2] >= 0).all()
+                    # if pc_in_image:
+                    #     depth_from_pc_positions = depth[:, screen_coord_y.int(), screen_coord_x.int()]
+                    #     loss_visible_pc = margin_range_loss(pc_cam[:, 2], lower=torch.zeros((1, 2)).to(device), upper=depth_from_pc_positions, margin=0.01).mean()
+                    #     loss += 10 * loss_visible_pc
+                    #     print(f"loss_visible_pc:{loss_visible_pc}")
+
+                    loss += 10 * loss_camera_over_points + loss_human_mask_in_image + loss_human_mask_area 
+                    visible_loss_weight = 10
+                    if loss < 1e-1 and loss_human_mask_visible > 1e-2:
+                        visible_loss_weight *= 10
+                        loss += visible_loss_weight * loss_human_mask_visible
                     loss_info["loss_camera_over_points"] = f"{loss_camera_over_points.item():.2f}"
                     loss_info["loss_human_mask_area"] = f"{loss_human_mask_area.item():.2f}"
                     loss_info["loss_human_mask_in_image"] = f"{loss_human_mask_in_image.item():.2f}"
@@ -1802,19 +1856,21 @@ class ScPanel:
                         loss += 100 * loss_camera_over_points
                         loss_info["loss_camera_over_points"] = f"{loss_camera_over_points.item():.2f}"
                 print(loss_info)
-                loss.backward()
+                scaler.scale(loss).backward()
                 torch.nn.utils.clip_grad_norm_(alpha, max_norm=1.0)
-                optimizer.step()
+                scaler.step(optimizer)
                 scheduler.step()
+                scaler.update()
                 if step == 0:
                     print("Initial Loss:", loss.item())
 
                 loss_info["loss"] = f"{loss.item():.2f}"
                 pbar.set_postfix(loss_info)
-                if loss.item() < 1e-2:
-                    break
+                # if loss.item() < 1e-2:
+                #     break
+        img = torch.tensor(self.render(cameras, render_mode="rgb"))
 
-        return cameras, img, bbox_masks
+        return cameras, img, bbox_masks, loss.item()
     
     def render_smplx_at_3d_position(self, points_world, R_w2c, t_w2c, focal, princpt, img, smplx_scale=1.0):
         """
@@ -1909,14 +1965,16 @@ class ScPanel:
     
     def get_priors(self):
         self.set_path('static')
+        """
         with open(os.path.join(self.cam_param_path, '0.json'), 'r') as f:
             cam_param = json.load(f)
             R_w2c = torch.tensor(cam_param['R'])
             t_w2c = torch.tensor(cam_param['t'])
             R_c2w = R_w2c.T
             t_c2w = -R_w2c.T @ t_w2c
-        with open(self.smplx_scale_path, 'r') as f:
-            smplx_scale = torch.tensor(json.load(f))
+        # with open(self.smplx_scale_path, 'r') as f:
+        #     smplx_scale = torch.tensor(json.load(f))
+        smplx_scale = torch.tensor([1.0])
         with open(os.path.join(self.smplx_params_path, '0.json'), 'r') as f:
             smplx_param = json.load(f)
         with open(self.smplx_shape_path, 'r') as f:
@@ -1953,6 +2011,9 @@ class ScPanel:
         up_vector = torch.nn.functional.normalize(up_vector, dim=-1)[0]
         # Match camera convention
         up_vector = up_vector
+        """
+        smplx_scale = torch.tensor([1.0])
+        up_vector = self.world_up_vector
 
         return smplx_scale.item(), up_vector
 
