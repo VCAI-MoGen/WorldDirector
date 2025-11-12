@@ -949,7 +949,13 @@ class ScPanel:
                 # Dump for traj dir
                 self.set_path('traj')
 
-                cameras, render, bbox_mask = self.optimize_cam_params(smplx_scale)
+                # cameras, render, bbox_mask = self.optimize_cam_params(smplx_scale)
+                cameras, render, bbox_mask, loss = self.optimize_cam_params(look_dir_sign=1, smplx_scale=smplx_scale)
+                if loss > 1e-2:
+                    cameras2, render2, bbox_mask2, loss2 = self.optimize_cam_params(look_dir_sign=-1, smplx_scale=smplx_scale)
+                    if loss2 < loss:
+                        cameras, render, bbox_mask = cameras2, render2, bbox_mask2
+
                 self.update_camera(client, cameras[0])
                 start_image = render[0].detach().cpu().numpy().copy().astype(np.uint8)
                 end_image = render[0].detach().cpu().numpy().copy().astype(np.uint8)
@@ -1957,7 +1963,7 @@ class ScPanel:
         # print("Rendering Done")
         return renders
 
-    def optimize_cam_params(self, smplx_scale=None, look_target=None, device="cuda:0"):
+    def optimize_cam_params(self, look_dir_sign=1, smplx_scale=None, look_target=None, device="cuda:0"):
         data_type = self.current_data_type
 
         cameras = None
@@ -2009,7 +2015,7 @@ class ScPanel:
                 initial_point = end_point
             else:
                 initial_point = center_point
-            initial_alpha = look_dir * self.ref_dist * 2.5 + up_vector
+            initial_alpha = look_dir_sign * look_dir * self.ref_dist * 2.5 + up_vector
             lr = 1e-1
 
         alpha = torch.tensor(initial_alpha, device=device, requires_grad=True)
@@ -2115,7 +2121,18 @@ class ScPanel:
                                                         upper=target_depth, \
                                                         margin=0.0).mean()
                 
+                # ============== 아래 두개 loss 비교
+
                 loss += 10 * loss_camera_over_points + loss_human_mask_in_image + loss_human_mask_area + 10 * loss_human_mask_visible
+
+                # loss += 10 * loss_camera_over_points + loss_human_mask_in_image + loss_human_mask_area 
+                #     visible_loss_weight = 10
+                #     if loss < 1e-1 and loss_human_mask_visible > 1e-2:
+                #         visible_loss_weight *= 10
+                #         loss += visible_loss_weight * loss_human_mask_visible
+
+                # ==============================
+
                 loss_info["loss_camera_over_points"] = f"{loss_camera_over_points.item():.2f}"
                 loss_info["loss_human_mask_area"] = f"{loss_human_mask_area.item():.2f}"
                 loss_info["loss_human_mask_in_image"] = f"{loss_human_mask_in_image.item():.2f}"
@@ -2168,7 +2185,7 @@ class ScPanel:
         
         self.set_rgb_render_mode()
 
-        return cameras, img, bbox_masks
+        return cameras, img, bbox_masks, loss.item()
     
     def render_smplx_at_3d_position(self, points_world, R_w2c, t_w2c, focal, princpt, img, smplx_scale=1.0):
         """
