@@ -68,7 +68,7 @@ class Config:
             self.lr = 1e-2
             self.lr_dec_itr = [75]
             self.depth_loss_weight = 10.0
-            self.col_loss_weight = 1.0
+            self.col_loss_weight = 100
             self.warmup = False
             self.use_depthmap_loss = True
             self.use_col_loss = True

@@ -77,11 +77,11 @@ class Dataset(torch.utils.data.Dataset):
             xmin, xmax = -3.0, 3.0
             ymin, ymax =  0.0, 2.0
             zmin, zmax = -4.0, 4.0
-            #sdf_path = meta_data['scene'].replace('.glb', '.npy')
-            #sdf_dict = {'sdf': torch.FloatTensor(np.load(sdf_path)), 'valid': True, 'x_range': (xmin, xmax), 'y_range': (ymin, ymax), 'z_range': (zmin, zmax)}
-            occ_path = meta_data['scene'].replace('.glb', '.npy')
-            sdf = -torch.FloatTensor(np.load(occ_path)) # occupancy grid -> sdf (1 (occupied) -> -1, 0 (empty) -> 0)
-            sdf_dict = {'sdf': -torch.FloatTensor(np.load(occ_path)), 'valid': True, 'x_range': (xmin, xmax), 'y_range': (ymin, ymax), 'z_range': (zmin, zmax)} 
+            sdf_path = meta_data['scene'].replace('.glb', '_sdf.npy')
+            sdf_dict = {'sdf': torch.FloatTensor(np.load(sdf_path)), 'valid': True, 'x_range': (xmin, xmax), 'y_range': (ymin, ymax), 'z_range': (zmin, zmax)}
+            #occ_path = meta_data['scene'].replace('.glb', '.npy')
+            #sdf = -torch.FloatTensor(np.load(occ_path)) # occupancy grid -> sdf (1 (occupied) -> -1, 0 (empty) -> 0)
+            #sdf_dict = {'sdf': -torch.FloatTensor(np.load(occ_path)), 'valid': True, 'x_range': (xmin, xmax), 'y_range': (ymin, ymax), 'z_range': (zmin, zmax)} 
         else:
             sdf_dict = {'sdf': torch.zeros((10,10,10)).float(), 'valid': False}
 
