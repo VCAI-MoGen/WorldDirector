@@ -25,7 +25,7 @@ class Dataset(torch.utils.data.Dataset):
                         'L_Wrist_Hand', 'L_Thumb_1', 'L_Thumb_2', 'L_Thumb_3', 'L_Thumb_4', 'L_Index_1', 'L_Index_2', 'L_Index_3', 'L_Index_4', 'L_Middle_1', 'L_Middle_2', 'L_Middle_3', 'L_Middle_4', 'L_Ring_1', 'L_Ring_2', 'L_Ring_3', 'L_Ring_4', 'L_Pinky_1', 'L_Pinky_2', 'L_Pinky_3', 'L_Pinky_4', # left hand
                         'R_Wrist_Hand', 'R_Thumb_1', 'R_Thumb_2', 'R_Thumb_3', 'R_Thumb_4', 'R_Index_1', 'R_Index_2', 'R_Index_3', 'R_Index_4', 'R_Middle_1', 'R_Middle_2', 'R_Middle_3', 'R_Middle_4', 'R_Ring_1', 'R_Ring_2', 'R_Ring_3', 'R_Ring_4', 'R_Pinky_1', 'R_Pinky_2', 'R_Pinky_3', 'R_Pinky_4') # right hand
                     }
-        self.cam_params, self.kpts, self.mask_paths, self.smplx_params, self.smplx_shape_param, self.frame_idx_list, self.img_paths, self.depth_vggt_paths = self.load_data()
+        self.cam_params, self.kpts, self.mask_paths, self.smplx_params, self.frame_idx_list, self.img_paths, self.depth_vggt_paths, self.sdf_dict = self.load_data()
         self.get_smplx_trans_init() # get initial smplx translation 
 
     def load_data(self):
@@ -69,14 +69,29 @@ class Dataset(torch.utils.data.Dataset):
             with open(smplx_param_path) as f:
                 smplx_params[frame_idx] = {k: torch.FloatTensor(v) for k,v in json.load(f).items()}
         
-        smplx_shape_param = torch.zeros((smpl_x.shape_param_dim))
+        # load sdf is available
+        with open(osp.join(self.root_path, '..', 'data.json')) as f:
+            meta_data = json.load(f)
+        if 'Mesh' in meta_data['scene']:
+            # hard-coded values of TRUMANS dataset
+            xmin, xmax = -3.0, 3.0
+            ymin, ymax =  0.0, 2.0
+            zmin, zmax = -4.0, 4.0
+            #sdf_path = meta_data['scene'].replace('.glb', '.npy')
+            #sdf_dict = {'sdf': torch.FloatTensor(np.load(sdf_path)), 'valid': True, 'x_range': (xmin, xmax), 'y_range': (ymin, ymax), 'z_range': (zmin, zmax)}
+            occ_path = meta_data['scene'].replace('.glb', '.npy')
+            sdf = -torch.FloatTensor(np.load(occ_path)) # occupancy grid -> sdf (1 (occupied) -> -1, 0 (empty) -> 0)
+            sdf_dict = {'sdf': -torch.FloatTensor(np.load(occ_path)), 'valid': True, 'x_range': (xmin, xmax), 'y_range': (ymin, ymax), 'z_range': (zmin, zmax)} 
+        else:
+            sdf_dict = {'sdf': torch.zeros((10,10,10)).float(), 'valid': False}
+
         frame_idx_list = [int(x) for x in cam_params.keys()]
 
         img_paths = {}
         for frame_idx in frame_idx_list:
             img_path = osp.join(self.root_path, 'frames', str(frame_idx) + '.png')
             img_paths[frame_idx] = img_path
-        return cam_params, kpts, mask_paths, smplx_params, smplx_shape_param, frame_idx_list, img_paths, depth_vggt_paths
+        return cam_params, kpts, mask_paths, smplx_params, frame_idx_list, img_paths, depth_vggt_paths, sdf_dict
 
     def get_smplx_trans_init(self):
         for i in range(len(self.frame_idx_list)):
@@ -97,7 +112,7 @@ class Dataset(torch.utils.data.Dataset):
             t_y = (t_y - princpt[1]) / focal[1] * t_z # meter
             t_xyz = torch.FloatTensor([t_x, t_y, t_z]) 
             self.smplx_params[frame_idx]['trans'] = t_xyz
-
+    
     def __len__(self):
         return len(self.frame_idx_list)
     

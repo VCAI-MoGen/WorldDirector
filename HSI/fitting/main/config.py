@@ -10,7 +10,7 @@ class Config:
     lr_dec_factor = 10
     body_3d_size = 2 # meter
     batch_size = 81
-    end_epoch = 2
+    end_epoch = 3
 
     ## others
     num_thread = 16
@@ -45,25 +45,33 @@ class Config:
             self.lr_dec_itr = [200]
             self.stage_itr = [100]
             self.depth_loss_weight = 0.0
-            self.kpt_loss_weight = 1.0
+            self.col_loss_weight = 0.0
             if itr < self.stage_itr[0]:
                 self.lr = 1e-1
                 self.warmup = True
                 self.use_depthmap_loss = False
-                self.use_kpt_loss = True
+                self.use_col_loss = False
             else:
                 self.lr = 1e-2
                 self.warmup = False
                 self.use_depthmap_loss = False
-                self.use_kpt_loss = True
+                self.use_col_loss = False
+        elif epoch == 1:
+            self.lr = 1e-2
+            self.lr_dec_itr = [75]
+            self.depth_loss_weight = 10.0
+            self.col_loss_weight = 0.0
+            self.warmup = False
+            self.use_depthmap_loss = True
+            self.use_col_loss = False
         else:
             self.lr = 1e-2
             self.lr_dec_itr = [75]
             self.depth_loss_weight = 10.0
-            self.kpt_loss_weight = 1.0
+            self.col_loss_weight = 1.0
             self.warmup = False
             self.use_depthmap_loss = True
-            self.use_kpt_loss = True
+            self.use_col_loss = True
 
 cfg = Config()
 

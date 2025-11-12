@@ -47,6 +47,10 @@ def main():
         smplx_params[frame_idx]['expr'] = nn.Parameter(trainer.smplx_params[frame_idx]['expr'].cuda())
         smplx_params[frame_idx]['trans'] = nn.Parameter(trainer.smplx_params[frame_idx]['trans'].cuda())
 
+    # sdf of scene
+    sdf_dict = trainer.sdf_dict
+    sdf_dict['sdf'] = sdf_dict['sdf'].cuda()
+
     for epoch in range(cfg.end_epoch):
         cfg.set_itr_opt(epoch)
 
@@ -84,11 +88,12 @@ def main():
                             smplx_inputs[key].append(smplx_params[int(frame_idx)][key])
                 for key in smplx_inputs.keys():
                     smplx_inputs[key] = torch.stack(smplx_inputs[key])
+                sdf_input = sdf_dict
 
                 # forwrad
                 trainer.set_lr(itr_opt)
                 trainer.optimizer.zero_grad()
-                loss, out = trainer.model(smplx_inputs, data, return_output=(itr_opt==cfg.itr_opt_num-1))
+                loss, out = trainer.model(smplx_inputs, sdf_input, data, return_output=(itr_opt==cfg.itr_opt_num-1))
                 loss = {k:loss[k].mean() for k in loss}
                 
                 # backward
@@ -111,6 +116,7 @@ def main():
             save_root_path = osp.join(root_path, 'smplx_optimized')
             os.makedirs(save_root_path, exist_ok=True)
             smplx_mesh_cam = out['smplx_mesh_cam'].detach().cpu()
+            smplx_mesh_world = out['smplx_mesh_world'].detach().cpu()
             smplx_trans = out['smplx_trans'].detach().cpu().numpy()
             human_traj = out['human_traj'].detach().cpu().numpy()
             for i in range(batch_size):
@@ -120,6 +126,7 @@ def main():
                 save_path = osp.join(save_root_path, 'meshes')
                 os.makedirs(save_path, exist_ok=True)
                 save_ply(osp.join(save_path, str(frame_idx) + '.ply'), torch.FloatTensor(smplx_mesh_cam[i]).contiguous(), torch.IntTensor(smpl_x.face).contiguous())
+                save_ply(osp.join(save_path, str(frame_idx) + '_world.ply'), torch.FloatTensor(smplx_mesh_world[i]).contiguous(), torch.IntTensor(smpl_x.face).contiguous())
 
                 # render
                 save_path = osp.join(save_root_path, 'renders')
