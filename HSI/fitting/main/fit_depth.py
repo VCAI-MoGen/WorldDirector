@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import open3d as o3d
 import json
 from tqdm import tqdm
+import imageio
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -25,15 +26,15 @@ root_path = args.root_path
 lr = args.learning_rate
 step_size = args.step_size
 depth_path = os.path.join(root_path, 'depths_vggt')
-mask_path = os.path.join(root_path, 'depths')
+mask_path = os.path.join(root_path, 'masks')
 scene_depth_path = os.path.join(root_path, 'depths_scene')
 
 device = "cuda:0"
 
 masks = torch.from_numpy(
     np.stack([
-    np.load(os.path.join(mask_path, f'{i}_mask.npy')) for i in range(len(os.listdir(depth_path)))
-])).to(device) # (N, H, W)
+    cv2.imread(os.path.join(mask_path, f'{i}.png')) / 255 for i in range(len(os.listdir(depth_path)))
+])).bool()[:, :, :, 0].to(device) # (N, H, W)
 
 depths = torch.from_numpy(
     np.stack([
@@ -140,87 +141,35 @@ def pc_world_to_depth(points_world, cam_param, w2c=True, device='cuda:0'):
 
     return depth_map
 
-if 'detailed' not in root_path:
-    s = torch.tensor(1.0, requires_grad=True)
-    t = torch.tensor(0.0, requires_grad=True)
+mean_in = depths.mean()
+std_in = depths.std()
+mean_tg = scene_depths.mean()
+std_tg = scene_depths.std()
+s_init = std_tg / (std_in + 1e-8)
+t_init = mean_tg - s_init * mean_in
 
-    optimizer = optim.Adam([s, t], lr=lr)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=250, gamma=0.5)
+s = torch.tensor(s_init, requires_grad=True)
+t = torch.tensor(t_init, requires_grad=True)
 
-    pbar = trange(step_size, desc="Training", dynamic_ncols=True)
-    for step in pbar:
-        optimizer.zero_grad()
+optimizer = optim.Adam([s, t], lr=lr)
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=250, gamma=0.5)
 
-        pred = depths * s + t
-        pred = torch.clamp(pred, min=1e-3)
-        loss = (((pred - scene_depths)**2)[~masks]).mean()
+pbar = trange(step_size, desc="Training", dynamic_ncols=True)
+for step in pbar:
+    optimizer.zero_grad()
 
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-        if step == 0:
-            print("Initial Loss:", loss.item())
+    pred = depths * torch.abs(s) + t
+    pred = torch.clamp(pred, min=1e-6)
+    # loss = (((pred - scene_depths)**2)[~masks]).mean()
+    loss = ((torch.abs(pred - scene_depths))[~masks]).mean()
 
-        pbar.set_postfix(loss=f"{loss.item():.6f}", scale=f"{s.item():.6f}", shift=f"{t.item():.6f}")
+    loss.backward()
+    optimizer.step()
+    scheduler.step()
+    if step == 0:
+        print("Initial Loss:", loss.item())
 
-else:
-    cam_params_dir = os.path.join(root_path, 'cam_params')
-    cam_params_scene_dir = os.path.join(root_path, 'cam_params_scene')
-    cam_params_path_list = [os.path.join(cam_params_dir, f'{i}.json') for i in range(len(os.listdir(cam_params_dir)))]
-    cam_params_scene_path_list = [os.path.join(cam_params_scene_dir, f'{i}.json') for i in range(len(os.listdir(cam_params_scene_dir)))]
-    cam_params = []
-    for cam_params_path in cam_params_path_list:
-        with open(cam_params_path, 'r') as f:
-            cam_params.append(json.load(f))
-    cam_params_scene = []
-    for cam_params_scene_path in cam_params_scene_path_list:
-        with open(cam_params_scene_path, 'r') as f:
-            cam_params_scene.append(json.load(f))
-    pseudo_pcs = []
-    gt_pcs = []
-    for i in range(len(cam_params)):
-        cam_param = cam_params[i]
-        depth = depths[i].detach().cpu().numpy()
-        pseudo_pc = depth_to_pc_world(depth, cam_param, c2w=False)
-
-        cam_param_scene = cam_params_scene[i]
-        scene_depth = scene_depths[i].detach().cpu().numpy()
-        gt_pc = depth_to_pc_world(scene_depth, cam_param_scene, c2w=False)
-
-        pseudo_pcs.append(pseudo_pc)
-        gt_pcs.append(gt_pc)
-    
-    pseudo_pcs_with_human = np.array(pseudo_pcs).reshape((-1, 3))
-    gt_pcs = np.array(gt_pcs).reshape((-1, 3))
-    human_mask = np.repeat(masks.detach().cpu().numpy().reshape(-1, 1), 3, axis=-1)
-    pseudo_pcs = pseudo_pcs_with_human[~human_mask].reshape((-1, 3))
-    gt_pcs = gt_pcs[~human_mask].reshape((-1, 3))
-    print(f"Initial MSE Error: {np.mean(pseudo_pcs - gt_pcs)}")
-    
-    pseudo_pcd = o3d.geometry.PointCloud()
-    pseudo_pcd.points = o3d.utility.Vector3dVector(pseudo_pcs)
-    gt_pcd = o3d.geometry.PointCloud()
-    gt_pcd.points = o3d.utility.Vector3dVector(gt_pcs)
-    corres = np.array([[i, i] for i in range(pseudo_pcs.shape[0])])
-    corres_o3d = o3d.utility.Vector2iVector(corres)
-    estimation_method = o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=True)
-    transform = estimation_method.compute_transformation(pseudo_pcd, gt_pcd, corres_o3d)
-    print(f"Transform Matrix: {transform}")
-    pseudo_pcd.transform(transform)
-    print(f"MSE Error after optimization: {np.mean(np.asarray(pseudo_pcd.points) - np.asarray(gt_pcd.points))}")
-
-    pseudo_pcs_with_human = np.hstack([pseudo_pcs_with_human, np.ones((pseudo_pcs_with_human.shape[0],1))])  # (N,4)
-    pseudo_pcs_with_human = (transform @ pseudo_pcs_with_human.T).T  # (N,4)
-    pseudo_pcs_with_human = pseudo_pcs_with_human[:, :3]
-    pred_pc = torch.tensor(pseudo_pcs_with_human, dtype=torch.float32, device=device)
-
-    pred = []
-    print("Depth Rendering from Point Cloud...")
-    for i in range(len(cam_params_scene)):
-        cam_param_scene = cam_params_scene[i]
-        depth = pc_world_to_depth(pred_pc, cam_param_scene, w2c=True, device=device)
-        pred.append(depth)
-    pred = torch.stack(pred)
+    pbar.set_postfix(loss=f"{loss.item():.6f}", scale=f"{s.item():.6f}", shift=f"{t.item():.6f}")
 
 print('prediction (max/min):', pred.max(), pred.min())
 print('pseudo depth (max/min):', depths.max(), depths.min())
@@ -268,10 +217,15 @@ print(f"Save visualization in {save_path}")
 
 optimized_depth_dir = os.path.join(root_path, 'depths_vggt_optimized')
 os.makedirs(optimized_depth_dir, exist_ok=True)
+optimized_depth_vis_dir = os.path.join(root_path, 'depths_vggt_optimized_vis')
+os.makedirs(optimized_depth_vis_dir, exist_ok=True)
 
 H, W = np.load(os.path.join(depth_path, '0.npy')).shape
 for i in range(optimized_depths.shape[0]):
     # depth = cv2.resize(optimized_depths[i], (W, H))
     np.save(os.path.join(optimized_depth_dir, f'{i}.npy'), optimized_depths[i])
+    optimized_depths_norm = (optimized_depths[i] - optimized_depths[i].min()) / (optimized_depths[i].max() - optimized_depths[i].min())
+    optimized_depths_norm = optimized_depths_norm * 255
+    imageio.imwrite(os.path.join(optimized_depth_vis_dir, f'{i}.png'), optimized_depths_norm.astype(np.uint8))
 
 print(f"Save optimized_depth in {optimized_depth_dir}")
