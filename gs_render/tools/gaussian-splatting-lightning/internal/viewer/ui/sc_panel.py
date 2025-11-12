@@ -489,7 +489,7 @@ class ScPanel:
 
                 cameras = self.get_cameras_from_client(client, img_wh=self.render_wh)
 
-                cameras, _, _ = self.optimize_cam_params() # w2c
+                cameras, _, _ = self.optimize_cam_params(client=client) # w2c
 
                 cam_pos = (-cameras.R[0] @ cameras.T[0]).detach().cpu().numpy()
                 
@@ -730,7 +730,7 @@ class ScPanel:
                 # Set data type for setting path
                 self.set_path('static')
 
-                cameras, _, _ = self.optimize_cam_params(smplx_up_vector=self.world_up_vector)
+                cameras, _, _ = self.optimize_cam_params(smplx_up_vector=self.world_up_vector, client=client)
                 self.update_camera(client, cameras[0])
                 render_wh = self.render_wh
 
@@ -950,11 +950,23 @@ class ScPanel:
                 self.set_path('traj')
 
                 # cameras, render, bbox_mask = self.optimize_cam_params(smplx_scale)
-                cameras, render, bbox_mask, loss = self.optimize_cam_params(look_dir_sign=1, smplx_scale=smplx_scale)
-                if loss > 1e-2:
-                    cameras2, render2, bbox_mask2, loss2 = self.optimize_cam_params(look_dir_sign=-1, smplx_scale=smplx_scale)
-                    if loss2 < loss:
-                        cameras, render, bbox_mask = cameras2, render2, bbox_mask2
+                cameras, render, bbox_mask, loss = self.optimize_cam_params(look_dir_sign=1, smplx_scale=smplx_scale, client=client)
+                if loss > 2:
+                    cameras2, render2, bbox_mask2, loss2 = self.optimize_cam_params(look_dir_sign=-1, smplx_scale=smplx_scale, client=client)
+
+                    while True:
+                        print("which one is better? Visualizing cam 1... Loss : ", loss)
+                        self.update_camera(client, cameras[0])
+                        input("Press any key to see cam 2")
+                        print("Visualizing cam 2... Loss : ", loss2)
+                        self.update_camera(client, cameras2[0])
+                        control_input = input("Which one is better? (1 / 2) Press any other button to look cam again")
+                        if control_input == '1':
+                            break
+                        elif control_input == '2':
+                            cameras, render, bbox_mask = cameras2, render2, bbox_mask2
+                            break
+                        
 
                 self.update_camera(client, cameras[0])
                 start_image = render[0].detach().cpu().numpy().copy().astype(np.uint8)
@@ -1963,7 +1975,7 @@ class ScPanel:
         # print("Rendering Done")
         return renders
 
-    def optimize_cam_params(self, look_dir_sign=1, smplx_scale=None, look_target=None, device="cuda:0"):
+    def optimize_cam_params(self, look_dir_sign=1, smplx_scale=None, look_target=None, device="cuda:0", client=None):
         data_type = self.current_data_type
 
         cameras = None
@@ -2062,7 +2074,10 @@ class ScPanel:
                 distortion_params=distortion_params,
                 camera_type=camera_type
             )
-            self.update_camera(self.server.get_clients()[0], cameras[0])
+            
+            if client is None:
+                self.server.get_clients()[0]
+            self.update_camera(client, cameras[0])
 
             depth = self.render(cameras, render_mode='exp_depth', optimizable=True) # (N, H, W)
             pc_cam = project_points_to_image(points_world, K, rotation_matrix, trans, include_depth=True).to(depth.device)
