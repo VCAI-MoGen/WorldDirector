@@ -99,14 +99,19 @@ target_cam_params_path = os.path.join(detailed_root_path, 'cam_params_scene')
 smplx_ply_path = os.path.join(traj_root_path, 'smplx_optimized', 'meshes_smoothed')
 if os.path.exists(os.path.join(detailed_root_path, 'scene_render_difix_enhanced.mp4')):
     scene_render_video_path = os.path.join(detailed_root_path, 'scene_render_difix_enhanced.mp4')
+    human_masked_video_path = os.path.join(detailed_root_path, 'human_masked_video_difix_enhanced.mp4')
+    human_render_video_path = os.path.join(detailed_root_path, 'human_render_video_difix_enhanced.mp4')
 elif os.path.exists(os.path.join(detailed_root_path, 'scene_render_difix.mp4')):
     scene_render_video_path = os.path.join(detailed_root_path, 'scene_render_difix.mp4')
+    human_masked_video_path = os.path.join(detailed_root_path, 'human_masked_video_difix.mp4')
+    human_render_video_path = os.path.join(detailed_root_path, 'human_render_video_difix.mp4')
 else:
     scene_render_video_path = os.path.join(detailed_root_path, 'scene_render_video.mp4')
+    human_masked_video_path = os.path.join(detailed_root_path, 'human_masked_video.mp4')
+    human_render_video_path = os.path.join(detailed_root_path, 'human_render_video.mp4')
 scene_render_frames = np.array([frame for frame in imageio.get_reader(scene_render_video_path)]) # (N, H, W, 3)
 mask_video_path = os.path.join(detailed_root_path, 'mask_video.mp4')
-human_masked_video_path = os.path.join(detailed_root_path, 'human_masked_video.mp4')
-human_render_video_path = os.path.join(detailed_root_path, 'human_render_video.mp4')
+
 
 cam_params_list = glob(os.path.join(cam_params_path, '*.json'))
 frame_idx_list = sorted([int(x.split('/')[-1][:-5]) for x in cam_params_list])

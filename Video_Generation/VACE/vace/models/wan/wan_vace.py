@@ -347,7 +347,6 @@ class WanVace(WanT2V):
                  offload_model=True,
                  # VCAI #
                  scene_frames=None,
-                 confidence_map=None, # (1, N, H, W),
                  enhance_scene=False
                  ):
         r"""
@@ -474,9 +473,6 @@ class WanVace(WanT2V):
             # sample videos
             latents = noise
             inject_scene = False
-
-            if confidence_map is not None:
-                m_confidence = self.vace_encode_confidences(confidence_map, input_ref_images)
 
             if scene_frames is not None:
                 scene_latents = self.vae.encode(scene_frames)

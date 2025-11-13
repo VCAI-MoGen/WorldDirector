@@ -822,18 +822,46 @@ class ScPanel:
                 
                 # Render Video
                 self.server.scene.set_global_visibility(False)
+                alpha = self.render(cameras, render_mode="alpha") # (N, H, W, 1)
+                n_contribs = self.render(cameras, render_mode="n_contribs") # (N, H, W, 1)
                 image = self.render(cameras, render_mode="rgb") # (N, H, W, 3)
                 self.server.scene.set_global_visibility(True)
+
+                confidence = np.expand_dims(-np.log(1 - alpha + 1e-6) * n_contribs, axis=-1) # (N, H, W, 1)
+                confidence = (confidence - confidence.min()) / (confidence.max() - confidence.min())
+                confidence_vis = (confidence * 255).astype(np.uint8)
+                confidence_vis = np.repeat(confidence_vis, 3, axis=-1) # (N, H, W, 3)
 
                 for i in range(len(cameras)):
                     image_path = os.path.join(self.scene_render_path, f"{i}.png")
                     imageio.imwrite(image_path, image[i])
+                    confidence_path = os.path.join(self.scene_confidence_path, f'{i}.png')
+                    np.save(confidence_path, confidence[i])
+                    confidence_vis_path = os.path.join(self.scene_confidence_vis_path, f'{i}.png')
+                    imageio.imwrite(confidence_vis_path, confidence_vis[i])
 
                 render_video_path = os.path.join(self.data_path, 'scene_render_video.mp4')
                 imageio.mimsave(render_video_path, image, fps=16)
                 print(f"Video saved in {render_video_path}")
 
                 self.update_camera(client, cameras[0])
+
+                self.run_difx()
+
+                difix_video_path = os.path.join(self.data_path, 'scene_render_difix.mp4')
+                frames = np.stack([frame for frame in imageio.get_reader(difix_video_path)])
+                
+                inpaint_mask_video_path = os.path.join(self.data_path, 'mask_video_inpaint.mp4')
+                inpaint_src_video_path = os.path.join(self.data_path, 'masked_video_inpaint.mp4')
+
+                masked_video = frames.copy()
+                masked_video[confidence.repeat(3, axis=-1) < 0.01] = 127
+                mask_video = (confidence.repeat(3, axis=-1) < 0.01).astype(np.uint8) * 255
+                imageio.mimsave(inpaint_src_video_path, masked_video, fps=16)
+                imageio.mimsave(inpaint_mask_video_path, mask_video, fps=16)
+
+                print(f"Video for inpainting in {inpaint_src_video_path} and {inpaint_mask_video_path}")
+
 
             dump_video_with_traj_SMPL = self.server.gui.add_button(
                 "Dump video with traj SMPL",

@@ -186,11 +186,6 @@ def get_parser():
         default=None,
         help="The file of the scene video. Default None.")
     parser.add_argument(
-        "--confidence_dir_path",
-        type=str,
-        default=None,
-        help="The directory of gaussian confidence. Default None.")
-    parser.add_argument(
         "--enhance_scene",
         action="store_true",
         default=False,
@@ -199,6 +194,11 @@ def get_parser():
         "--root_path",
         default=None,
         help="Data Path")
+    parser.add_argument(
+        "--inpaint",
+        action="store_true",
+        default=False,
+        help="Whether to inpainting empty regions by confidence map.")
     ########
     return parser
 
@@ -272,6 +272,53 @@ def main(args):
         dist.broadcast_object_list(base_seed, src=0)
         args.base_seed = base_seed[0]
 
+    logging.info("Creating WanT2V pipeline.")
+    wan_vace = WanVace(
+        config=cfg,
+        checkpoint_dir=args.ckpt_dir,
+        device_id=device,
+        rank=rank,
+        t5_fsdp=args.t5_fsdp,
+        dit_fsdp=args.dit_fsdp,
+        use_usp=(args.ulysses_size > 1 or args.ring_size > 1),
+        t5_cpu=args.t5_cpu,
+    )
+
+    # VCAI #
+    scene_video = None
+    if args.root_path is not None:
+        root_path = args.root_path
+        data_path = os.path.join(root_path, '../data.json')
+        with open(data_path, 'r') as f:
+            meta_data = json.load(f)
+        args.prompt = meta_data['text']
+        if 'traj' in root_path:
+            args.prompt += " The screen is fixed."
+
+        if args.enhance_scene:
+            scene_video_path = os.path.join(root_path, 'scene_render_difix.mp4')
+            if os.path.exists(os.path.join(root_path, 'scene_render_difix_inpainted.mp4')):
+                scene_video_path = os.path.join(root_path, 'scene_render_difix_inpainted.mp4')
+            scene_video, _, _ = wan_vace.prepare_source([scene_video_path],
+                                                        [args.src_mask],
+                                                        [None if args.src_ref_images is None else args.src_ref_images.split(',')],
+                                                        args.frame_num, SIZE_CONFIGS[args.size], device)
+            args.src_video = scene_video_path
+        elif args.inpaint:
+            args.prompt = "Fill the video."
+            args.src_video = os.path.join(root_path, 'masked_video_inpaint.mp4')
+            args.src_mask = os.path.join(root_path, 'mask_video_inpaint.mp4')
+        else:
+            args.src_video = os.path.join(root_path, 'human_masked_video.mp4')
+            if os.path.exists(os.path.join(root_path, 'human_masked_video_difix.mp4')):
+                args.src_video = os.path.join(root_path, 'human_masked_video_difix.mp4')
+            if os.path.exists(os.path.join(root_path, 'human_masked_video_difix_enhanced.mp4')):
+                args.src_video = os.path.join(root_path, 'human_masked_video_difix_enhanced.mp4')
+            args.src_mask = os.path.join(root_path, 'mask_video.mp4')
+            if 'ref_image' in meta_data:
+                args.src_ref_images = meta_data['ref_image']
+    ########
+
     if args.prompt is None:
         args.prompt = EXAMPLE_PROMPT[args.model_name]["prompt"]
         args.src_video = EXAMPLE_PROMPT[args.model_name].get("src_video", None)
@@ -291,59 +338,11 @@ def main(args):
             dist.broadcast_object_list(input_prompt, src=0)
         args.prompt = input_prompt[0]
         logging.info(f"Extended prompt: {args.prompt}")
-
-    logging.info("Creating WanT2V pipeline.")
-    wan_vace = WanVace(
-        config=cfg,
-        checkpoint_dir=args.ckpt_dir,
-        device_id=device,
-        rank=rank,
-        t5_fsdp=args.t5_fsdp,
-        dit_fsdp=args.dit_fsdp,
-        use_usp=(args.ulysses_size > 1 or args.ring_size > 1),
-        t5_cpu=args.t5_cpu,
-    )
-    if args.root_path is not None:
-        root_path = args.root_path
-        args.src_video = os.path.join(root_path, 'human_masked_video.mp4')
-        if os.path.exists(os.path.join(root_path, 'human_masked_video_enhanced.mp4')):
-            args.src_video = os.path.join(root_path, 'human_masked_video_enhanced.mp4')
-        args.src_mask = os.path.join(root_path, 'mask_video.mp4')
-        data_path = os.path.join(root_path, '../data.json')
-        with open(data_path, 'r') as f:
-            data = json.load(f)
-        if 'ref_image' in data:
-            args.src_ref_images = data['ref_image']
     
     src_video, src_mask, src_ref_images = wan_vace.prepare_source([args.src_video],
                                                                   [args.src_mask],
                                                                   [None if args.src_ref_images is None else args.src_ref_images.split(',')],
                                                                   args.frame_num, SIZE_CONFIGS[args.size], device)
-    # VCAI #
-    if args.scene_video is not None:
-        scene_video, _, _ = wan_vace.prepare_source([args.scene_video],
-                                                    [args.src_mask],
-                                                    [None if args.src_ref_images is None else args.src_ref_images.split(',')],
-                                                    args.frame_num, SIZE_CONFIGS[args.size], device)
-    elif args.enhance_scene:
-        scene_video_path = os.path.join(root_path, 'scene_render_difix.mp4')
-        src_ref_images = [None]
-        scene_video, _, _ = wan_vace.prepare_source([scene_video_path],
-                                                    [args.src_mask],
-                                                    [None if args.src_ref_images is None else args.src_ref_images.split(',')],
-                                                    args.frame_num, SIZE_CONFIGS[args.size], device)
-    else:
-        scene_video = None
-    
-    if args.confidence_dir_path is not None:
-        import numpy as np
-        confidence = [np.load(os.path.join(args.confidence_dir_path, f'{i}.npy')) for i, confidence_path in enumerate(os.listdir(args.confidence_dir_path))]
-        confidence = torch.tensor(confidence, device=device, dtype=src_video[0].dtype) # (N, H, W, 1)
-        confidence = confidence.permute(3, 0, 1, 2) # (1, N, H, W)
-    
-    else:
-        confidence = None
-    ########
 
     logging.info(f"Generating video...")
     video = wan_vace.generate(
@@ -361,7 +360,6 @@ def main(args):
         offload_model=args.offload_model,
         # VCAI #
         scene_frames=scene_video,
-        confidence_map=confidence,
         enhance_scene=args.enhance_scene)
 
     ret_data = {}
@@ -387,6 +385,8 @@ def main(args):
         if root_path is not None:
             if args.enhance_scene:
                 save_file = os.path.join(root_path, "scene_render_difix_enhanced.mp4")
+            elif args.inpaint:
+                save_file = os.path.join(root_path, "scene_render_difix_inpainted.mp4")
             else:
                 save_file = os.path.join(root_path, "video.mp4")
             cache_video(
