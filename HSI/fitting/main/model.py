@@ -192,7 +192,7 @@ class Model(nn.Module):
             out = {}
             out['smplx_mesh_cam'] = smplx_mesh_cam
             out['smplx_mesh_world'] = smplx_mesh_world
-            out['smplx_trans'] = smplx_trans - smplx_root_cam
+            out['smplx_trans'] = smplx_trans
             out['human_traj'] = traj
             
             return loss, out
