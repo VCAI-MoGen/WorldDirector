@@ -186,11 +186,11 @@ for frame_idx in tqdm(frame_idx_list):
                                 # transl = torch.FloatTensor(smplx_param['trans']).view(1,-1), \
                                 betas = shape_param.view(1,-1), \
                                 )
-    mesh_cam = output.vertices * smplx_scale[None, None, :]
-    kpt_cam = output.joints[:,smpl_x.kpt['idx'],:] * smplx_scale[None, None, :]
+    mesh_cam = output.vertices
+    kpt_cam = output.joints[:,smpl_x.kpt['idx'],:] 
     root_cam = kpt_cam[:,smpl_x.kpt['root_idx'],:]
-    mesh_cam = mesh_cam + smplx_param['trans'][None, None, :]
-    kpt_cam = kpt_cam + smplx_param['trans'][None, None, :]
+    mesh_cam = (mesh_cam - root_cam[:, None, :]) * smplx_scale[None, None, :] + smplx_param['trans'][None, None, :]
+    kpt_cam = (kpt_cam - root_cam[:, None, :]) * smplx_scale[None, None, :] + smplx_param['trans'][None, None, :]
 
     vert = mesh_cam[0]
     traj = 0.5 * (kpt_cam[:, smpl_x.kpt['name'].index('L_Hip'), :] + kpt_cam[:, smpl_x.kpt['name'].index('R_Hip'), :])
