@@ -177,6 +177,7 @@ class Model(nn.Module):
 
         if not cfg.warmup:
             loss['smplx_shape_reg'] = smplx_inputs['shape'] ** 2 * 0.01
+            loss['smplx_expr_reg'] = smplx_inputs['expr'] ** 2 * 0.01
             loss['smplx_mesh'] = torch.abs((smplx_mesh_cam - smplx_kpt_cam[:,smpl_x.kpt['root_idx'],None,:]) - \
                                             (smplx_mesh_cam_init - smplx_kpt_cam_init[:,smpl_x.kpt['root_idx'],None,:])) * 0.1 
             smplx_input_pose = self.get_smplx_full_pose(smplx_inputs)
