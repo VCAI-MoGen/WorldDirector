@@ -37,7 +37,11 @@ class PoseReg(nn.Module):
         foot_weight = torch.zeros_like(pose_out)
         foot_weight[:,[i for i in range(smpl_x.joint['num']) if smpl_x.joint['name'][i] in ['L_Foot', 'R_Foot']],:] = 1
 
-        loss = pose_out[:,:,0,None] ** 2 * head_weight + pose_out ** 2 * foot_weight
+        # to prevent distorted jaw pose
+        jaw_weight = torch.zeros_like(pose_out)
+        jaw_weight[:,[i for i in range(smpl_x.joint['num']) if smpl_x.joint['name'][i] in ['Jaw']],:] = 1
+
+        loss = pose_out[:,:,0,None] ** 2 * head_weight + pose_out ** 2 * foot_weight + pose_out ** 2 * jaw_weight
         return loss
 
 class ColLoss(nn.Module):
