@@ -74,7 +74,7 @@ class ScPanel:
         if os.path.exists(self.start_point_path):
             with open(self.start_point_path, 'r') as f:
                 self.init_start_point = np.array(json.load(f))
-                self.server.scene.add_point_cloud(
+                self.start_point_handle = self.server.scene.add_point_cloud(
                     name='start_point',
                     points=self.init_start_point[None],
                     colors=(1.0, 0.0, 0.0),
@@ -88,7 +88,7 @@ class ScPanel:
         if os.path.exists(self.end_point_path):
             with open(self.end_point_path, 'r') as f:
                 self.init_end_point = np.array(json.load(f))
-                self.server.scene.add_point_cloud(
+                self.end_point_handle = self.server.scene.add_point_cloud(
                     name='end_point',
                     points=self.init_end_point[None],
                     colors=(0.0, 0.0, 1.0),
@@ -174,7 +174,7 @@ class ScPanel:
                 scene = self.server.scene
                 with open(os.path.join(self.root_path, 'start_point.json'), 'w') as f:
                     json.dump(self.start_point.value, f)
-                scene.add_point_cloud(
+                self.start_point_handle = scene.add_point_cloud(
                     name='start_point',
                     points=np.array(self.start_point.value)[None],
                     colors=(1.0, 0.0, 0.0),
@@ -187,7 +187,7 @@ class ScPanel:
                 scene = self.server.scene
                 with open(os.path.join(self.root_path, 'end_point.json'), 'w') as f:
                     json.dump(self.end_point.value, f)
-                scene.add_point_cloud(
+                self.end_point_handle = scene.add_point_cloud(
                     name='end_point',
                     points=np.array(self.end_point.value)[None],
                     colors=(0.0, 0.0, 1.0),
@@ -229,7 +229,7 @@ class ScPanel:
                     print(f"start point: {self.start_point.value}")
                     with open(os.path.join(self.root_path, 'start_point.json'), 'w') as f:
                         json.dump(self.start_point.value, f)
-                    scene.add_point_cloud(
+                    self.start_point_handle = scene.add_point_cloud(
                         name='start_point',
                         points=pc,
                         colors=(1.0, 0.0, 0.0),
@@ -271,7 +271,7 @@ class ScPanel:
                     print(f"end point: {self.end_point.value}")
                     with open(os.path.join(self.root_path, 'end_point.json'), 'w') as f:
                         json.dump(self.end_point.value, f)
-                    scene.add_point_cloud(
+                    self.end_point_handle = scene.add_point_cloud(
                         name='end_point',
                         points=pc,
                         colors=(0.0, 0.0, 1.0),
@@ -1249,39 +1249,43 @@ class ScPanel:
                         colors=pc_rgb,
                         point_size=self.point_cloud_size
                     )
-            dump_n_contrib_button = self.server.gui.add_button(
-                "Dump N_Contrib",
+            dump_LINGO_button = self.server.gui.add_button(
+                "Dump LINGO",
                 color="blue",
                 icon=viser.Icon.PLAYER_PLAY,
-                hint="Visualize confidence.",
+                hint="Visualize lingo.",
             )
-            @dump_n_contrib_button.on_click
+            @dump_LINGO_button.on_click
             def _(event: viser.GuiEvent) -> None: 
                 client = event.client
                 assert client is not None
 
-                # Dump for static dir
-                self.set_path('static')
+                self.set_path('traj')
+                lingo_output_path = '/home/ckd248/data/evaluation_targets/lingo_output'
+                dataset_name = self.root_path.split('/')[-1]
+                lingo_data_path = os.path.join(lingo_output_path, dataset_name)
+                lingo_mesh_path = os.path.join(lingo_data_path, 'meshes')
+                mesh_path_list = [os.path.join(lingo_mesh_path, f'{i}.ply') for i in range(len(os.listdir(lingo_mesh_path)))]
+                mesh_list = [trimesh.load_mesh(mesh_path) for i, mesh_path in enumerate(mesh_path_list)]
 
-                cameras = self.get_cameras_from_client(client, img_wh=self.render_wh)
-                self.update_camera(client, cameras[0])
+                cam_params_path = [os.path.join(self.cam_param_path, '0.json')]
+                cameras = self.get_cameras_from_json(cam_params_path)
+                
+                frames = []
+                for idx, mesh in enumerate(mesh_list):
+                    mesh.visual.vertex_colors = np.array([100, 100, 100, 255], dtype=np.uint8)
+                    mesh_handle = client.scene.add_mesh_trimesh(
+                        name=f'smplx',
+                        mesh=mesh,
+                        receive_shadow=True
+                    )
+                    frame = self.render(cameras, render_mode="rgb")[0]
+                    frames.append(frame)
+                lingo_video_path = os.path.join(self.root_path, 'lingo.mp4')
+                imageio.mimsave(lingo_video_path, frames, fps=30)
+                print(f"LINGO video saved in {lingo_video_path}")
+                
 
-                # Render Depth
-                
-                alpha = self.render(cameras, render_mode="alpha")
-                n_contribs = self.render(cameras, render_mode="n_contribs")
-                
-                
-                confidence = -np.log(1 - alpha + 1e-6) * n_contribs
-                confidence = (confidence - confidence.min()) / (confidence.max() - confidence.min())
-                confidence_vis = np.expand_dims(confidence * 255, axis=-1).astype(np.uint8)
-                confidence_vis = np.repeat(confidence_vis, 3, axis=-1)
-
-                for i in range(confidence.shape[0]):
-                    confidence_path = os.path.join(self.scene_confidence_path, f"{i}.npy")
-                    np.save(confidence_path, confidence[i])
-                    confidence_vis_path = os.path.join(self.scene_confidence_vis_path, f"{i}.png")
-                    imageio.imwrite(confidence_vis_path, confidence_vis[i])
 
     def _build_data_dir(self):
         root_path = self.root_path
@@ -2149,10 +2153,13 @@ class ScPanel:
     
     def set_visible_only_scene(self, flag):
         scene = self.server.scene
-        handle_from_node_name = scene._handle_from_node_name
-        for node_name, handle in handle_from_node_name.items():
-            if node_name != '/scene_mesh':
-                handle.visible = not flag
+        scene.world_axes.visible = False
+        self.start_point_handle.visible = False
+        self.end_point_handle.visible = False
+        # handle_from_node_name = scene._handle_from_node_name
+        # for node_name, handle in handle_from_node_name.items():
+        #     if node_name != '/scene_mesh':
+        #         handle.visible = not flag
 
 def depth_to_pc(depth_map, K, R_c2w=None, t_c2w=None, screen_pos=None):
     

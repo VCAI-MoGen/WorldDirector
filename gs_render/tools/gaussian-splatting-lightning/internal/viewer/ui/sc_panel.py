@@ -127,7 +127,7 @@ class ScPanel:
                 plane_info = json.load(f)
                 self.world_up_vector = torch.tensor(plane_info[:3])
                 self.plane_offset = plane_info[-1]
-                self.ref_dist = self.calculate_ref_distance()
+                self.ref_dist = 0.5
             print(f"World up vector exists: {self.world_up_vector.tolist()}")
         else:
             self.world_up_vector = None
@@ -1708,7 +1708,7 @@ class ScPanel:
                 initial_point = end_point
             else:
                 initial_point = center_point
-            initial_alpha = look_dir * self.ref_dist * 2.5 + up_vector
+            initial_alpha = self.ref_dist * 2.5 * up_vector
             lr = 1e-1
 
         alpha = torch.tensor(initial_alpha, device=device, requires_grad=True)
@@ -1814,7 +1814,7 @@ class ScPanel:
                                                         upper=target_depth, \
                                                         margin=0.0).mean()
                 
-                loss += 10 * loss_camera_over_points + loss_human_mask_in_image + loss_human_mask_area + 10 * loss_human_mask_visible
+                loss += loss_human_mask_in_image + loss_human_mask_area + 100 * loss_human_mask_visible
                 loss_info["loss_camera_over_points"] = f"{loss_camera_over_points.item():.2f}"
                 loss_info["loss_human_mask_area"] = f"{loss_human_mask_area.item():.2f}"
                 loss_info["loss_human_mask_in_image"] = f"{loss_human_mask_in_image.item():.2f}"
@@ -1962,50 +1962,10 @@ class ScPanel:
     
     def get_priors(self):
         self.set_path('static')
-        with open(os.path.join(self.cam_param_path, '0.json'), 'r') as f:
-            cam_param = json.load(f)
-            R_w2c = torch.tensor(cam_param['R'])
-            t_w2c = torch.tensor(cam_param['t'])
-            R_c2w = R_w2c.T
-            t_c2w = -R_w2c.T @ t_w2c
         with open(self.smplx_scale_path, 'r') as f:
             smplx_scale = torch.tensor(json.load(f))
-        with open(os.path.join(self.smplx_params_path, '0.json'), 'r') as f:
-            smplx_param = json.load(f)
-        with open(self.smplx_shape_path, 'r') as f:
-            smplx_shape = json.load(f)
-        device = 'cpu'
-        smpl_x.layer['neutral'] = smpl_x.layer['neutral'].to(device)
-        output = smpl_x.layer['neutral'](
-            global_orient = torch.tensor(smplx_param['root_pose'])[None].to(device), \
-            body_pose = torch.tensor(smplx_param['body_pose'])[None].to(device), \
-            jaw_pose = torch.tensor(smplx_param['jaw_pose'])[None].to(device), \
-            leye_pose = torch.tensor(smplx_param['leye_pose'])[None].to(device), \
-            reye_pose = torch.tensor(smplx_param['reye_pose'])[None].to(device), \
-            left_hand_pose = torch.tensor(smplx_param['lhand_pose'])[None].to(device), \
-            right_hand_pose = torch.tensor(smplx_param['rhand_pose'])[None].to(device), \
-            expression = torch.tensor(smplx_param['expr'])[None].to(device), \
-            betas = torch.tensor(smplx_shape)[None].to(device), \
-        )
-        mesh_cam = output.vertices * smplx_scale[None, None, :]
-        kpt_cam = output.joints[:,smpl_x.kpt['idx'],:] * smplx_scale[None, None, :]
-        root_cam = kpt_cam[:,smpl_x.kpt['root_idx'],:].clone()
-
-        axis = np.array([1, 0, 0])
-        angle = np.pi
-        yz_inv_rot = axis_angle_to_matrix(torch.tensor((axis * angle))[None].float())
-        
-        kpt_cam -= root_cam[:, None, :]
-        kpt_cam = kpt_cam @ yz_inv_rot @ R_c2w.T + t_c2w[None, None, :]
-        
-        pelvis_kpt = kpt_cam[:, smpl_x.kpt['idx'][smpl_x.kpt['name'].index('Pelvis')], :]
-        left_shoulder_kpt = kpt_cam[:, smpl_x.kpt['idx'][smpl_x.kpt['name'].index('L_Shoulder')], :]
-        right_shoulder_kpt = kpt_cam[:, smpl_x.kpt['idx'][smpl_x.kpt['name'].index('R_Shoulder')], :]
-        
-        up_vector = (left_shoulder_kpt + right_shoulder_kpt) / 2 - pelvis_kpt
-        up_vector = torch.nn.functional.normalize(up_vector, dim=-1)[0]
         # Match camera convention
-        up_vector = up_vector
+        up_vector = self.world_up_vector
 
         return smplx_scale.item(), up_vector
 
