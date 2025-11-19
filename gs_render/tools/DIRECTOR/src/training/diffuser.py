@@ -742,7 +742,7 @@ class Diffuser(L.LightningModule):
                 feat_reg_loss += 5 * velocity_6d_l2_loss(x_next_copy)
                 feat_reg_loss *= feat_reg_weight
                 feat_reg_grad = torch.autograd.grad(feat_reg_loss, x_next_copy, create_graph=False)[0]
-                x_next = x_next - 0.1 * feat_reg_grad
+                x_next = x_next - 0.1 * cfg_weight_scaling * feat_reg_grad
 
                 x_next = torch.nan_to_num(x_next) # stability
             

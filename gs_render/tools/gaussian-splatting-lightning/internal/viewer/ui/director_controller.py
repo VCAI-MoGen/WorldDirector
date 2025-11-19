@@ -35,7 +35,7 @@ class DirectorController:
     def __init__(self, sc_panel):
         self.is_generating_cam_params = False
         self.sc_panel = sc_panel
-    
+
     def generate_cam_params(self, client):
         if self.is_generating_cam_params:
             print("Already Generating")
@@ -92,7 +92,7 @@ class DirectorController:
                 video_name += f"_{var_name}_{ctrl[var_name]}"
         video_name += '.mp4'
 
-        self.remote_extract_video(self.get_root_path(), human_render_video_name=video_name)
+        self.remote_extract_video(self.get_root_path())
 
         self.is_generating_cam_params = False
         print("It took", time.time() - start_time)
@@ -159,11 +159,24 @@ class DirectorController:
     def get_world_up_vector(self):
         return self.sc_panel.world_up_vector
     
+    def get_cam_start_point(self):
+        return torch.tensor(self.sc_panel.cam_start_point)
+    
+    def get_cam_end_point(self):
+        return torch.tensor(self.sc_panel.cam_end_point)
+    
+    def get_smplx_scale(self):
+        return self.director.smplx_scale
+    
     def get_render_wh(self):
         return self.sc_panel.render_wh
     
     def get_K(self, fov: float, img_wh: Tuple[int, int]):
         return self.sc_panel.get_K(fov=fov, img_wh=img_wh)
+
+    def get_cam_params(self):
+        img_wh = self.get_render_wh()
+        return self.sc_panel.get_cam_params(self.diffuser_client, img_wh)
 
     def set_rgb_render_mode(self):
         self.sc_panel.set_rgb_render_mode()
@@ -178,10 +191,10 @@ class DirectorController:
         return self.sc_panel.render_smplx_at_3d_position(points_world, R_w2c, t_w2c, focal, princpt, img, smplx_scale=smplx_scale)
     
     def run_difix(self):
-        self.sc_panel.run_difix
+        self.sc_panel.run_difx()
 
-    def remote_extract_video(self, root_path=None, video_name=None):
-        remote_extract_video(root_path, video_name)
+    def remote_extract_video(self, root_path):
+        remote_extract_video(root_path)
     # endregion
 
     # region ========== Custom Guidance ==========
@@ -203,7 +216,7 @@ class DirectorController:
 
         self.world_head_positions, self.world_heading_vectors, self.meshes = self.get_world_head_poses()
 
-        self.world_upper_body_positions, self.world_upper_body_heading_vectors = self.get_world_upper_body_poses()
+        self.world_upper_body_positions, self.world_upper_body_heading_vectors, self.pelves = self.get_world_upper_body_poses()
 
         self.cam_start_pose = None
         if self.director.control_cfg.start_pose_replace:
@@ -236,7 +249,7 @@ class DirectorController:
                                                     self.get_matrix,
                                                     self.director.R_scene_up_to_director_up,
                                                     self.director.char_start,
-                                                    self.director.smplx_scale)
+                                                    self.get_smplx_scale())
 
         world_up_vector = torch.tensor(self.get_world_up_vector(), device=device, dtype=dtype)
 
@@ -252,7 +265,7 @@ class DirectorController:
                                                 self.get_feature,
                                                 self.director.R_scene_up_to_director_up.to(device),
                                                 self.director.char_start.to(device),
-                                                self.director.smplx_scale)
+                                                self.get_smplx_scale())
 
         self.debug_cam_change(cam_feat, new_feat, self.director.K, 5)
 
@@ -263,7 +276,7 @@ class DirectorController:
         dtype = cam_feat.dtype
         
         smplx_scale, smplx_up_vector = self.get_priors()
-        smplx_scale = self.director.smplx_scale
+        smplx_scale = self.get_smplx_scale()
         smplx_up_vector = torch.tensor(self.get_world_up_vector()).to(device)
 
         # World Space
@@ -272,7 +285,7 @@ class DirectorController:
                                         self.get_matrix,
                                         self.director.R_scene_up_to_director_up,
                                         self.director.char_start,
-                                        self.director.smplx_scale,
+                                        self.get_smplx_scale(),
                                     )
         
         t_c2w = t_c2w.squeeze(-1)
@@ -415,7 +428,7 @@ class DirectorController:
         dtype = cam_feat.dtype
         
         smplx_scale, smplx_up_vector = self.get_priors()
-        smplx_scale = self.director.smplx_scale
+        smplx_scale = self.get_smplx_scale()
         smplx_up_vector = torch.tensor(self.get_world_up_vector()).to(smplx_up_vector)
         
         data_type = 'traj'
@@ -578,21 +591,30 @@ class DirectorController:
     # endregion
 
     # region ========= Camera Pose Priors ========
-
     def get_camera_start_pose_prior(self):
-        return self.get_camera_pose_prior(0, distance=2*self.director.smplx_scale, target="upper_body")
+        world_cam_pos = self.get_cam_start_point()
+
+        # world_cam_pos += torch.rand_like(world_cam_pos) * 0.1 * self.get_smplx_scale() - 0.05 * self.get_smplx_scale()
+
+        # Temporarily used target Pelvis since smplx was too high
+
+        return self.get_camera_pose_prior(0, target="pelvis", world_cam_pos=world_cam_pos, is_feat=True)
     
     def get_camera_end_pose_prior(self):
         # Not feature since current setting is velocity based model
-        return self.get_camera_pose_prior(-1, target="upper_body", distance=2*self.director.smplx_scale, is_feat=False)
+        world_cam_pos = self.get_cam_end_point()
 
-    def get_camera_pose_prior(self, frame_idx=0, target="head", distance=None, is_feat=True):
+        # world_cam_pos += torch.rand_like(world_cam_pos) * 0.1 * self.get_smplx_scale() - 0.05 * self.get_smplx_scale()
+
+        return self.get_camera_pose_prior(-1, target="pelvis", world_cam_pos=world_cam_pos)
+
+    def get_camera_pose_prior(self, frame_idx=0, target="upper_body", world_cam_pos=None, distance=None, is_feat=False):
         # smplx_scale, smplx_up_vector = self.get_priors()
         device = 'cpu'
         dtype = torch.float32
 
         if distance is None:
-            distance = self.director.smplx_scale
+            distance = self.get_smplx_scale()
 
         if target == "head":
             target_position = self.world_head_positions[frame_idx]
@@ -600,13 +622,20 @@ class DirectorController:
         elif target == "upper_body":
             target_position = self.world_upper_body_positions[frame_idx]
             heading_vector = self.world_upper_body_heading_vectors[frame_idx]
+        elif target == "pelvis":
+            target_position = self.pelves[frame_idx]
+            heading_vector = self.world_upper_body_heading_vectors[frame_idx]
         mesh = self.meshes[frame_idx]
 
         target_position = torch.tensor(target_position, device=device, dtype=dtype)
         heading_vector = torch.tensor(heading_vector, device=device, dtype=dtype)
         world_up_vector = torch.tensor(self.get_world_up_vector(), device=device, dtype=dtype)
 
-        camera_trans = target_position + normalize(heading_vector) * distance + world_up_vector * 0.5 * self.director.smplx_scale
+        if world_cam_pos is None:
+            camera_trans = target_position + normalize(heading_vector) * distance + world_up_vector * 0.5 * self.get_smplx_scale()
+        else:
+            camera_trans = world_cam_pos.to(device).to(dtype)
+        
         # camera_trans = torch.zeros((1, 3), device=device, dtype=dtype)
         camera_forward = normalize(target_position - camera_trans).squeeze(0)
         camera_right = normalize(torch.cross(camera_forward, normalize(world_up_vector)))
@@ -645,7 +674,7 @@ class DirectorController:
                                                             self.get_feature,
                                                             self.director.R_scene_up_to_director_up.to(device),
                                                             self.director.char_start.to(device),
-                                                            self.director.smplx_scale).squeeze(0).transpose(-1, -2) # (1, P)
+                                                            self.get_smplx_scale()).squeeze(0).transpose(-1, -2) # (1, P)
         
         return cam_pose_output
 
@@ -715,6 +744,7 @@ class DirectorController:
         json_list = [f'{i}.json' for i in range(len(os.listdir(self.get_cam_param_path())))]
         target_position_list = []
         heading_vector_list = []
+        pelvis_list = []
         for filename in json_list:
             with open(os.path.join(self.get_cam_param_path(), filename), 'r') as f:
                 cam_param = json.load(f)
@@ -745,9 +775,10 @@ class DirectorController:
             kpt_cam += torch.tensor(smplx_param['trans'], device=device)[None, None, :]
             kpt_world = kpt_cam @ R_c2w.T + t_c2w[None, None, :]
 
-            pelvis_kpt = kpt_world[:, smpl_x.kpt['name'].index('Pelvis'), :]
-            l_shoulder_kpt = kpt_world[:, smpl_x.kpt['name'].index('L_Shoulder'), :]
-            r_shoulder_kpt = kpt_world[:, smpl_x.kpt['name'].index('R_Shoulder'), :]
+            offset=(self.get_world_up_vector().to(device) * smplx_scale / 2)
+            pelvis_kpt = kpt_world[:, smpl_x.kpt['name'].index('Pelvis'), :] - offset
+            l_shoulder_kpt = kpt_world[:, smpl_x.kpt['name'].index('L_Shoulder'), :] - offset
+            r_shoulder_kpt = kpt_world[:, smpl_x.kpt['name'].index('R_Shoulder'), :] - offset
 
             upper_body_position = (pelvis_kpt + l_shoulder_kpt + r_shoulder_kpt) / 3
 
@@ -756,11 +787,14 @@ class DirectorController:
 
             target_position_list.append(upper_body_position.squeeze())
             heading_vector_list.append(heading_vector.squeeze())
+            pelvis_list.append(pelvis_kpt.squeeze())
 
         target_positions = torch.stack(target_position_list)
+        pelves = torch.stack(pelvis_list)
         heading_vectors = torch.stack(heading_vector_list)
+        
 
-        return target_positions, heading_vectors
+        return target_positions, heading_vectors, pelves
 
     # endregion
 
@@ -781,13 +815,13 @@ class DirectorController:
                                                 self.get_matrix,
                                                 self.director.R_scene_up_to_director_up,
                                                 self.director.char_start,
-                                                self.director.smplx_scale)
+                                                self.get_smplx_scale())
 
         R_batch_next, t_batch_next = traj_feat_to_camera_space_matrix(next_cam_feat_copy.to(device),
                                                 self.get_matrix,
                                                 self.director.R_scene_up_to_director_up,
                                                 self.director.char_start,
-                                                self.director.smplx_scale)
+                                                self.get_smplx_scale())
 
         cur_cameras = build_cameras(R_batch, t_batch, K)
         next_cameras = build_cameras(R_batch_next, t_batch_next, K)
@@ -814,7 +848,7 @@ class DirectorController:
                                     self.get_matrix,
                                     self.director.R_scene_up_to_director_up,
                                     self.director.char_start,
-                                    self.director.smplx_scale,
+                                    self.get_smplx_scale(),
                                 )
 
         R_world = R_world.squeeze()[batch_valid_mask[0].bool()]
@@ -825,7 +859,7 @@ class DirectorController:
                                     self.get_matrix,
                                     self.director.R_scene_up_to_director_up,
                                     self.director.char_start,
-                                    self.director.smplx_scale,
+                                    self.get_smplx_scale(),
                                 )
 
         R_world_next = R_world_next.squeeze()[batch_valid_mask[0].bool()]
@@ -857,7 +891,7 @@ class DirectorController:
                                     self.get_matrix,
                                     self.director.R_scene_up_to_director_up,
                                     self.director.char_start,
-                                    self.director.smplx_scale,
+                                    self.get_smplx_scale(),
                                 )
 
         R_world = R_world.squeeze()[batch_valid_mask[0].bool()]
@@ -868,7 +902,7 @@ class DirectorController:
                                     self.get_matrix,
                                     self.director.R_scene_up_to_director_up,
                                     self.director.char_start,
-                                    self.director.smplx_scale,
+                                    self.get_smplx_scale(),
                                 )
 
         R_world_next = R_world_next.squeeze()[batch_valid_mask[0].bool()]
@@ -896,7 +930,7 @@ class DirectorController:
                                                     self.get_matrix,
                                                     self.director.R_scene_up_to_director_up.to(cam_feat.device),
                                                     self.director.char_start.to(cam_feat.device),
-                                                    self.director.smplx_scale)
+                                                    self.get_smplx_scale())
         
         t_world = t_world.squeeze(-1)[0][batch_valid_mask[0].bool()]
         
@@ -937,7 +971,7 @@ class DirectorController:
                                                     self.get_matrix,
                                                     self.director.R_scene_up_to_director_up.to(cam_feat.device),
                                                     self.director.char_start.to(cam_feat.device),
-                                                    self.director.smplx_scale)
+                                                    self.get_smplx_scale())
         
         t_world = t_world.squeeze(-1)[0][batch_valid_mask[0].bool()]
 

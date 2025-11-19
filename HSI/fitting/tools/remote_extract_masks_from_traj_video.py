@@ -89,18 +89,27 @@ def load_ply_mesh(ply_path):
     verts, faces = load_ply(ply_path)
     return verts, faces
 
-def remote_extract_video(root_path, scene_render_video_name='scene_render_video.mp4', human_render_video_name='human_render_video.mp4'):
+def remote_extract_video(root_path):
     traj_root_path = os.path.join(root_path, 'traj')
-    detailed_root_path = os.path.join(root_path, 'detailed')
+    detailed_root_path = os.path.join(root_path, 'detailed_ablation')
 
     cam_params_path = os.path.join(traj_root_path, 'cam_params_scene')
     target_cam_params_path = os.path.join(detailed_root_path, 'cam_params_scene')
     smplx_ply_path = os.path.join(traj_root_path, 'smplx_optimized', 'meshes_smoothed')
-    scene_render_video_path = os.path.join(detailed_root_path, scene_render_video_name)
+    if os.path.exists(os.path.join(detailed_root_path, 'scene_render_difix_enhanced.mp4')):
+        scene_render_video_path = os.path.join(detailed_root_path, 'scene_render_difix_enhanced.mp4')
+        human_masked_video_path = os.path.join(detailed_root_path, 'human_masked_video_difix_enhanced.mp4')
+        human_render_video_path = os.path.join(detailed_root_path, 'human_render_video_difix_enhanced.mp4')
+    elif os.path.exists(os.path.join(detailed_root_path, 'scene_render_difix.mp4')):
+        scene_render_video_path = os.path.join(detailed_root_path, 'scene_render_difix.mp4')
+        human_masked_video_path = os.path.join(detailed_root_path, 'human_masked_video_difix.mp4')
+        human_render_video_path = os.path.join(detailed_root_path, 'human_render_video_difix.mp4')
+    else:
+        scene_render_video_path = os.path.join(detailed_root_path, 'scene_render_video.mp4')
+        human_masked_video_path = os.path.join(detailed_root_path, 'human_masked_video.mp4')
+        human_render_video_path = os.path.join(detailed_root_path, 'human_render_video.mp4')
     scene_render_frames = np.array([frame for frame in imageio.get_reader(scene_render_video_path)]) # (N, H, W, 3)
     mask_video_path = os.path.join(detailed_root_path, 'mask_video.mp4')
-    human_masked_video_path = os.path.join(detailed_root_path, 'human_masked_video.mp4')
-    human_render_video_path = os.path.join(detailed_root_path, human_render_video_name)
 
     cam_params_list = glob(os.path.join(cam_params_path, '*.json'))
     frame_idx_list = sorted([int(x.split('/')[-1][:-5]) for x in cam_params_list])
@@ -135,18 +144,18 @@ def remote_extract_video(root_path, scene_render_video_name='scene_render_video.
         verts = (verts @ R_c2w.T + t_c2w) @ R_w2c.T + t_w2c
 
         image, mask = render_mesh_and_mask(verts, faces, target_cam_param, bkg=scene_render_frames[frame_idx]) # (H, W, 3), (H, W, 1)
-        # bb_mask = mask_to_bbox_mask(mask) # (H, W, 1)
-        # bb_mask = np.repeat(bb_mask, 3, axis=-1)
-        # human_masked = image.copy()
-        # human_masked[bb_mask > 0] = 127
+        bb_mask = mask_to_bbox_mask(mask) # (H, W, 1)
+        bb_mask = np.repeat(bb_mask, 3, axis=-1)
+        human_masked = image.copy()
+        human_masked[bb_mask > 0] = 127
 
-        # mask_frames.append(bb_mask)
+        mask_frames.append(bb_mask)
         human_render_frames.append(image)
-        # human_masked_frames.append(human_masked)
+        human_masked_frames.append(human_masked)
         
-    # imageio.mimsave(mask_video_path, mask_frames, fps=16)
+    imageio.mimsave(mask_video_path, mask_frames, fps=16)
     imageio.mimsave(human_render_video_path, human_render_frames, fps=16)
-    # imageio.mimsave(human_masked_video_path, human_masked_frames, fps=16)
+    imageio.mimsave(human_masked_video_path, human_masked_frames, fps=16)
 
     print(f"Video saved in {human_render_video_path}")
 

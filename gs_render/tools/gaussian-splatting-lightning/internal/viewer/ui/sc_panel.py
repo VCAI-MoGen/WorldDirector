@@ -123,34 +123,7 @@ class ScPanel:
                 data['scene'] = self.viewer.model_paths[0]
             with open(os.path.join(self.root_path, 'data.json'), 'w') as f:
                 json.dump(data, f, indent=4)
-    
-        self.start_point_path = os.path.join(self.root_path, 'start_point.json')
-        if os.path.exists(self.start_point_path):
-            with open(self.start_point_path, 'r') as f:
-                self.init_start_point = np.array(json.load(f))
-                self.server.scene.add_point_cloud(
-                    name='start_point',
-                    points=self.init_start_point[None],
-                    colors=(1.0, 0.0, 0.0),
-                    point_size=0.01,
-                    point_shape='circle'
-                )
-        else:
-            self.init_start_point = np.array([0.0, 0.0, 0.0])
-        
-        self.end_point_path = os.path.join(self.root_path, 'end_point.json')
-        if os.path.exists(self.end_point_path):
-            with open(self.end_point_path, 'r') as f:
-                self.init_end_point = np.array(json.load(f))
-                self.server.scene.add_point_cloud(
-                    name='end_point',
-                    points=self.init_end_point[None],
-                    colors=(0.0, 0.0, 1.0),
-                    point_size=0.01,
-                    point_shape='circle'
-                )
-        else:
-            self.init_end_point = np.array([0.0, 0.0, 0.0])
+
 
         self.smplx_root_position_path = os.path.join(self.root_path, 'smplx_root_position.json')
         if os.path.exists(self.smplx_root_position_path):
@@ -164,7 +137,7 @@ class ScPanel:
         else:
             self.init_up_vector_point = (self.init_start_point + self.init_end_point) / 2 + np.array([0.0, -1.0, 0.0])
 
-        self.data_type_list = ['static', 'traj', 'detailed']
+        self.data_type_list = ['static', 'traj', 'detailed', 'detailed_ablation']
         self.current_data_type = self.data_type_list[0]
 
         self.running_mesh = False
@@ -198,6 +171,41 @@ class ScPanel:
         self._setup_vis_folder()
 
         self.director_controller = DirectorController(self)
+
+        self.set_path('traj')
+        if os.path.exists(self.smplx_params_path):
+            print("SMPLX Params Exists")
+            self.world_upper_body_positions, self.world_upper_body_heading_vectors, self.meshes, self.pelves = self.get_world_upper_body_poses()
+
+            print("start_upper_body:", self.world_upper_body_positions[0])
+            print("end_upper_body:", self.world_upper_body_positions[-1])
+            print("start_pelvis:", self.pelves[0])
+            print("end_pelvis:", self.pelves[-1])
+
+            self.init_cam_start_point_path = os.path.join(self.root_path, "cam_start_point.json")
+            if os.path.exists(self.init_cam_start_point_path):
+                # Load saved cam pos
+                with open(self.init_cam_start_point_path, 'r') as f:
+                    data = json.load(f)
+                    self.init_cam_start_point = torch.tensor(data)
+            else:
+                self.init_cam_start_point = self.get_camera_pose_prior(frame_idx=0, distance=1.8*self.smplx_scale).squeeze()[:3, 3]
+                print(self.init_cam_start_point)
+            self.cam_start_point = self.init_cam_start_point
+            
+            self.init_cam_end_point_path = os.path.join(self.root_path, "cam_end_point.json")
+            if os.path.exists(self.init_cam_end_point_path):
+                # Load saved cam pos
+                with open(self.init_cam_end_point_path, 'r') as f:
+                    data = json.load(f)
+                    self.init_cam_end_point = torch.tensor(data)
+            else:
+                self.init_cam_end_point = self.get_camera_pose_prior(frame_idx=-1, distance=1.8*self.smplx_scale).squeeze()[:3, 3]
+                print(self.init_cam_end_point)
+            self.cam_end_point = self.init_cam_end_point
+        else:
+            print("SMPLX params doesn't exists")
+
         self.up_vector_path = os.path.join(self.root_path, 'up_vector.json')
         if os.path.exists(self.up_vector_path):
             with open(self.up_vector_path, 'r') as f:
@@ -240,14 +248,6 @@ class ScPanel:
                 max=(self.max_x, self.max_y, self.max_z),
                 step=0.01,
                 initial_value=self.init_end_point,
-            )
-
-            self.start_point = self.server.gui.add_vector3(
-                "Start Point",
-                min=(self.min_x, self.min_y, self.min_z),
-                max=(self.max_x, self.max_y, self.max_z),
-                step=0.01,
-                initial_value=self.init_start_point,
             )
 
             @self.start_point.on_update
@@ -951,7 +951,7 @@ class ScPanel:
 
                 # cameras, render, bbox_mask = self.optimize_cam_params(smplx_scale)
                 cameras, render, bbox_mask, loss = self.optimize_cam_params(look_dir_sign=1, smplx_scale=smplx_scale, client=client)
-                if loss > 2:
+                if loss > 1e-2:
                     cameras2, render2, bbox_mask2, loss2 = self.optimize_cam_params(look_dir_sign=-1, smplx_scale=smplx_scale, client=client)
 
                     while True:
@@ -1104,6 +1104,90 @@ class ScPanel:
                 print("Finish Dumping!")
 
                 self.run_difx()
+
+
+            move_to_init_cam_start_pos_button = self.server.gui.add_button(
+                "Move Client Cam to Init Start Pos",
+                color="red",
+                icon=viser.Icon.LIVE_PHOTO,
+                hint=".",
+            )
+            @move_to_init_cam_start_pos_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                if os.path.exists(self.init_cam_start_point_path):
+                    # Load saved cam pos
+                    with open(self.init_cam_start_point_path, 'r') as f:
+                        data = json.load(f)
+                        init_cam_start_point = torch.tensor(data)
+                else:
+                    # Load default position
+                    init_cam_start_point = self.init_cam_start_point
+
+                event.client.scene.add_point_cloud(
+                    name="start_point_mesh",
+                    points=self.meshes[0].squeeze().detach().cpu().numpy(),       # (N, 3)
+                    colors=(0.4, 0.5, 0.4),     # (N, 3) in [0, 1]
+                    point_size=0.005
+                )
+                
+                camera = self.get_camera_by_position(init_cam_start_point, event.client, frame=0)
+                self.update_camera(event.client, camera)
+
+            save_cam_start_pos_button = self.server.gui.add_button(
+                "Save Client Cam Start Pos",
+                color="purple",
+                icon=viser.Icon.LIVE_PHOTO,
+                hint=".",
+            )
+            @save_cam_start_pos_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                self.cam_start_point = event.client.camera.position
+
+                with open(self.init_cam_start_point_path, 'w') as f:
+                    json.dump(self.cam_start_point.tolist(), f)
+                    print("Saved to :", self.cam_start_point.tolist(), self.init_cam_start_point_path)
+
+            move_to_init_cam_end_pos_button = self.server.gui.add_button(
+                "Move Client Cam to Init End Pos",
+                color="red",
+                icon=viser.Icon.LIVE_PHOTO,
+                hint=".",
+            )
+            @move_to_init_cam_end_pos_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                if os.path.exists(self.init_cam_end_point_path):
+                    # Load saved cam pos
+                    with open(self.init_cam_end_point_path, 'r') as f:
+                        data = json.load(f)
+                        init_cam_end_point = torch.tensor(data)
+                else:
+                    # Load default position
+                    init_cam_end_point = self.init_cam_end_point
+
+                event.client.scene.add_point_cloud(
+                    name="end_point_mesh",
+                    points=self.meshes[-1].squeeze().detach().cpu().numpy(),       # (N, 3)
+                    colors=(0.4, 0.5, 0.4),     # (N, 3) in [0, 1]
+                    point_size=0.005
+                )
+                
+                camera = self.get_camera_by_position(init_cam_end_point, event.client, frame=-1)
+                self.update_camera(event.client, camera)
+            
+            save_cam_end_pos_button = self.server.gui.add_button(
+                "Save Client Cam Start Pos",
+                color="purple",
+                icon=viser.Icon.LIVE_PHOTO,
+                hint=".",
+            )
+            @save_cam_end_pos_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                self.cam_end_point = event.client.camera.position
+
+                with open(self.init_cam_end_point_path, 'w') as f:
+                    json.dump(self.cam_end_point.tolist(), f)
+                    print("Saved to :", self.cam_end_point.tolist(), self.init_cam_end_point_path)
+                    
 
             generate_camera_params_button = self.server.gui.add_button(
                 "Generate Camera Params and Scene Vid",
@@ -2517,6 +2601,122 @@ class ScPanel:
 
         return self.ref_dist
 
+    def get_world_upper_body_poses(self):
+        device = 'cuda:0'
+        self.set_path('traj')
+        json_list = [f'{i}.json' for i in range(len(os.listdir(self.cam_param_path)))]
+        target_position_list = []
+        heading_vector_list = []
+        mesh_list = []
+        pelvis_list = []
+        for filename in json_list:
+            with open(os.path.join(self.cam_param_path, filename), 'r') as f:
+                cam_param = json.load(f)
+                R_w2c = torch.tensor(cam_param['R'], device=device)
+                t_w2c = torch.tensor(cam_param['t'], device=device)
+                R_c2w = R_w2c.T
+                t_c2w = -R_w2c.T @ t_w2c
+            with open(self.smplx_scale_path, 'r') as f:
+                smplx_scale = torch.tensor(json.load(f), device=device)
+            with open(os.path.join(self.smplx_params_path, filename), 'r') as f:
+                smplx_param = json.load(f)
+            with open(self.smplx_shape_path, 'r') as f:
+                smplx_shape = json.load(f)
+            smpl_x.layer['neutral'] = smpl_x.layer['neutral'].to(device)
+            output = smpl_x.layer['neutral'](
+                global_orient = torch.tensor(smplx_param['root_pose'], device=device)[None], \
+                body_pose = torch.tensor(smplx_param['body_pose'], device=device)[None], \
+                jaw_pose = torch.tensor(smplx_param['jaw_pose'], device=device)[None], \
+                leye_pose = torch.tensor(smplx_param['leye_pose'], device=device)[None], \
+                reye_pose = torch.tensor(smplx_param['reye_pose'], device=device)[None], \
+                left_hand_pose = torch.tensor(smplx_param['lhand_pose'], device=device)[None], \
+                right_hand_pose = torch.tensor(smplx_param['rhand_pose'], device=device)[None], \
+                expression = torch.tensor(smplx_param['expr'], device=device)[None], \
+                betas = torch.tensor(smplx_shape, device=device)[None], \
+            )
+            mesh_cam = output.vertices * smplx_scale[None, None, :]
+            kpt_cam = output.joints[:,smpl_x.kpt['idx'],:] * smplx_scale[None, None, :]
+            
+            kpt_cam += torch.tensor(smplx_param['trans'], device=device)[None, None, :]
+            kpt_world = kpt_cam @ R_c2w.T + t_c2w[None, None, :]
+
+            mesh_cam += torch.tensor(smplx_param['trans'], device=device)[None, None, :]
+            mesh_world = mesh_cam @ R_c2w.T + t_c2w[None, None, :]
+
+            offset = (self.world_up_vector * self.smplx_scale / 2).to(device)
+            pelvis_kpt = kpt_world[:, smpl_x.kpt['name'].index('Pelvis'), :] - offset
+            l_shoulder_kpt = kpt_world[:, smpl_x.kpt['name'].index('L_Shoulder'), :] - offset
+            r_shoulder_kpt = kpt_world[:, smpl_x.kpt['name'].index('R_Shoulder'), :] - offset
+
+            upper_body_position = (pelvis_kpt + l_shoulder_kpt + r_shoulder_kpt) / 3
+
+            heading_vector = normalize(torch.cross((l_shoulder_kpt - r_shoulder_kpt).squeeze(),
+                                                    torch.tensor(self.world_up_vector).float().to(r_shoulder_kpt.device)))
+
+            target_position_list.append(upper_body_position.squeeze())
+            heading_vector_list.append(heading_vector.squeeze())
+            pelvis_list.append(pelvis_kpt.squeeze())
+            mesh_list.append(mesh_world.squeeze())
+
+        target_positions = torch.stack(target_position_list)
+        heading_vectors = torch.stack(heading_vector_list)
+        pelves = torch.stack(pelvis_list)
+        meshes = torch.stack(mesh_list)
+
+        return target_positions, heading_vectors, meshes.to(torch.float32), pelves
+
+    def get_camera_pose_prior(self, frame_idx=0, world_cam_pos=None, distance=None, is_feat=False):
+        device = 'cpu'
+        dtype = torch.float32
+
+        if distance is None:
+            distance = self.smplx_scale
+
+        target_position = self.pelves[frame_idx]
+        heading_vector = self.world_upper_body_heading_vectors[frame_idx]
+        mesh = self.meshes[frame_idx]
+
+        target_position = torch.tensor(target_position, device=device, dtype=dtype)
+        heading_vector = torch.tensor(heading_vector, device=device, dtype=dtype)
+        world_up_vector = torch.tensor(self.world_up_vector, device=device, dtype=dtype)
+
+        if world_cam_pos is None:
+            camera_trans = target_position + normalize(heading_vector) * distance + world_up_vector * 0.3 * self.smplx_scale
+        else:
+            camera_trans = world_cam_pos.to(device).to(dtype)
+        
+        # camera_trans = torch.zeros((1, 3), device=device, dtype=dtype)
+        camera_forward = normalize(target_position - camera_trans).squeeze(0)
+        camera_right = normalize(torch.cross(camera_forward, normalize(world_up_vector)))
+        camera_up = normalize(torch.cross(camera_forward, camera_right))
+
+        camera_rotation = torch.zeros((3, 3), device=device, dtype=dtype)
+        camera_rotation[:, 0] = camera_right
+        camera_rotation[:, 1] = camera_up
+        camera_rotation[:, 2] = camera_forward
+        
+        camera_pose = torch.zeros((1, 4, 4), device=device, dtype=dtype)
+        camera_pose[:, :3, :3] = camera_rotation
+        camera_pose[:, :3, 3] = camera_trans
+        camera_pose[:, 3, 3] = 1
+
+        return camera_pose
+
+    def get_camera_by_position(self, world_cam_pos, client, frame=0):
+        cam_pose = self.get_camera_pose_prior(frame, world_cam_pos=world_cam_pos)
+
+        camera_rotation = cam_pose.squeeze()[:3, :3]
+        camera_trans = cam_pose.squeeze()[:3, 3]
+
+        c2w, fov = self.get_current_camera(client)
+
+        K = torch.tensor(self.get_K(fov, self.render_wh))
+
+        R_w2c = camera_rotation.T
+        t_w2c = -R_w2c @ camera_trans
+
+        return build_single_camera(R_w2c, t_w2c, K)
+
 def depth_to_pc(depth_map, K, R_c2w=None, t_c2w=None, screen_pos=None):
     """
     depth_map   : (H,W)
@@ -3017,3 +3217,40 @@ def point_to_plane_distance(point, plane):
     numerator = abs(a*x0 + b*y0 + c*z0 + d)
     denominator = np.sqrt(a**2 + b**2 + c**2)
     return numerator / denominator
+
+def build_single_camera(R, t, K):
+    device = R.device
+
+    R = R.unsqueeze(0)
+    t = t.unsqueeze(0)
+
+    fx = K[0][0][None]
+    fy = K[1][1][None]
+    cx = K[0][2][None].float()
+    cy = K[1][2][None].float()
+    width_batch = torch.tensor(int(cx * 2), device=device, dtype=torch.int)[None]
+    height_batch = torch.tensor(int(cy * 2), device=device, dtype=torch.int)[None]
+    appearance_id_batch = torch.zeros(1, device=device, dtype=torch.int)
+    normalized_appearance_id_batch = torch.zeros(1, device=device, dtype=torch.int)
+    distortion_params_batch = torch.zeros((1, 4), device=device, dtype=torch.int)
+    camera_type_batch = torch.zeros(1, device=device, dtype=torch.int)
+
+    cameras = Cameras(
+        R=R,
+        T=t,
+        fx=fx,
+        fy=fy,
+        cx=cx,
+        cy=cy,
+        width=width_batch,
+        height=height_batch,
+        appearance_id=appearance_id_batch,
+        normalized_appearance_id=normalized_appearance_id_batch,
+        distortion_params=distortion_params_batch,
+        camera_type=camera_type_batch
+    )
+
+    return cameras[0]
+
+def normalize(v, eps=1e-8):
+    return v / (v.norm(dim=-1, keepdim=True).clamp_min(eps))
