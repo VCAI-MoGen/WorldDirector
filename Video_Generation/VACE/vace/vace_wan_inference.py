@@ -382,7 +382,7 @@ def main(args):
             nrow=1,
             normalize=True,
             value_range=(-1, 1))
-        if root_path is not None:
+        if args.root_path is not None:
             if args.enhance_scene:
                 save_file = os.path.join(root_path, "scene_render_difix_enhanced.mp4")
             elif args.inpaint:

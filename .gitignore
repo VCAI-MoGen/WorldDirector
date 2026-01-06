@@ -1,3 +1,12 @@
 data
 evaluation/data
 evaluation/evaluation_results
+evaluation/masked_video
+__pycache__
+wandb
+*.npz
+*.npy
+*.jpg
+*.png
+*.mp4
+*.txt

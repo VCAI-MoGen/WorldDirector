@@ -1426,6 +1426,24 @@ class ScPanel:
                 
                 self.set_rgb_render_mode()
 
+            load_cam_params_button = self.server.gui.add_button(
+                "load static cam params",
+                color="blue",
+                icon=viser.Icon.PLAYER_PLAY,
+                hint="load static cam params",
+            )
+            @load_cam_params_button.on_click
+            def _(event: viser.GuiEvent) -> None: 
+                client = event.client
+                assert client is not None
+
+                self.set_path('static')
+                cam_param_dir_path = self.cam_param_path
+                cam_params_path = [os.path.join(cam_param_dir_path, f'{i}.json') for i in range(len(os.listdir(cam_param_dir_path)))]
+                cameras = self.get_cameras_from_json(cam_params_path)
+
+                self.update_camera(client, cameras[0])
+
     def _build_data_dir(self):
         root_path = self.root_path
         if not os.path.exists(root_path):
