@@ -21,11 +21,10 @@ class CustomPanel:
         self.renderer = renderer
         self.recon = recon
 
-        self.is_frustum_visualized = False
+        self.is_frustum_visualized = {"colmap": False, "GS": False, "npz": False, "vae": False}
+        self.frustum_handles = {"colmap": [], "GS": [], "npz": [], "vae": []}
 
         self.pcd = None
-
-        self.frustum_handles = []
 
         self._setup_vis_folder()
     
@@ -153,9 +152,9 @@ class CustomPanel:
                 client = event.client
                 assert client is not None
 
-                self.is_frustum_visualized[camera_type] = not self.is_frustum_visualized[camera_type]
-                
                 camera_type = self.camera_type.value
+                
+                self.is_frustum_visualized[camera_type] = not self.is_frustum_visualized[camera_type]
                 cameras = None
                 if camera_type == "colmap":
                     cameras = self.get_cameras_from_colmap()
