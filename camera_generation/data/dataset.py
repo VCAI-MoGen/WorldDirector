@@ -53,9 +53,9 @@ class CamDataset(torch.utils.data.Dataset):
             # if idx > 3:
             #     break
             # Experiments for linear interpolation
-            if data_name not in ['1K/006771db3c057280f9277e735be6daa24339657ce999216c38da68002a443fed', '006771db3c057280f9277e735be6daa24339657ce999216c38da68002a443fed']:
-            # # if data_name not in ['2K/75fa1a43d70b7fbc2d58bff7122bf57b47af4d74855694aca46eb8a3fbf5d51b']:
-                continue
+            # if data_name not in ['1K/006771db3c057280f9277e735be6daa24339657ce999216c38da68002a443fed', '006771db3c057280f9277e735be6daa24339657ce999216c38da68002a443fed']:
+            # # # if data_name not in ['2K/75fa1a43d70b7fbc2d58bff7122bf57b47af4d74855694aca46eb8a3fbf5d51b']:
+            #     continue
 
             
             data_path = osp.join(self.dataset_path, data_name)
