@@ -200,6 +200,14 @@ class Cameras:
     def _calculate_camera_center(self):
         self.camera_center = torch.linalg.inv(self.world_to_camera)[:, 3, :3]
 
+    def _calculate_K(self):
+        self.K = torch.zeros((self.fx.shape[0], 3, 3))
+        self.K[:, 0, 0] = self.fx
+        self.K[:, 1, 1] = self.fy
+        self.K[:, 0, 2] = self.cx
+        self.K[:, 1, 2] = self.cy
+        self.K[:, 2, 2] = 1.0
+
     def __post_init__(self):
         self._calculate_fov()
         self._calculate_w2c()
@@ -342,31 +350,17 @@ def get_camera_params_from_json(json_path):
     with open(json_path, 'r') as f:
         data = json.load(f)
 
-    sorted_params = sorted(
-        data,
-        key=lambda x: x['img_name']
-    )
-
     extrinsic_list = []
     intrinsic_list = []
-    for params in sorted_params:
-        R_c2w, t_c2w = params['rotation'], params['position']
-
-        R_w2c = np.array(R_c2w).T
-        t_w2c = (- R_w2c @ np.array(t_c2w).reshape(-1, 1)).squeeze(-1)
+    for params in data:
+        R_w2c, t_w2c = params['rotation'], params['position']
 
         extrinsic = np.eye(4)
         extrinsic[:3, :3] = R_w2c
         extrinsic[:3, 3] = t_w2c
 
-        fx, fy = params['fx'], params['fy']
-        fx /= INTRINSIC_SCALING
-        fy /= INTRINSIC_SCALING
-        # cx, cy = params['cx'], params['cy']
-        width, height = params['width'], params['height']
-        width /= INTRINSIC_SCALING
-        height /= INTRINSIC_SCALING
-        cx, cy = width/2.0, height/2.0
+        fx, fy, cx, cy = params['fx'], params['fy'], params['cx'], params['cy']
+
         intrinsic = np.array([
             [fx, 0, cx],
             [0, fy, cy],
@@ -421,13 +415,13 @@ def get_colmap_camera_params(recon: pycolmap.Reconstruction):
 
     return extrinsics, intrinsics
 
-def get_cameras_from_json(root_path):
-    w2c_ext, intrinsics = get_camera_params_from_json(os.path.join(root_path, "GS", "cameras.json"))
+def get_cameras_from_json(json_path):
+    w2c_ext, intrinsics = get_camera_params_from_json(json_path)
     cameras = build_cameras(w2c_ext, intrinsics)
     return cameras
 
-def get_cameras_from_colmap(root_path):
-    sparse_path = f"{root_path}/colmap/sparse"
+def get_cameras_from_colmap(colmap_path):
+    sparse_path = os.path.join(colmap_path, 'sparse')
     recon = pycolmap.Reconstruction(sparse_path)
     extrinsics, intrinsics = get_colmap_camera_params(recon)
     cameras = build_cameras(extrinsics, intrinsics)

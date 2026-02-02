@@ -41,9 +41,12 @@ class CrossAttention(nn.Module):
         super().__init__()
         self.attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
         self.norm = nn.LayerNorm(dim)
+        self.attn_weight = None
 
-    def forward(self, x, context):
-        a, _ = self.attn(x, context, context)
+    def forward(self, x, context, key_padding_mask=None):
+        a, attn_weight = self.attn(x, context, context, key_padding_mask=key_padding_mask)
+        if self.training is False:
+            self.attn_weight = attn_weight
         return self.norm(x + a)
 
 
@@ -56,9 +59,11 @@ class CameraDiffusionModel(nn.Module):
         num_layers=4,
         num_heads=8,
         point_dim=768,
-        text_dim=512,
+        text_dim=4096,
     ):
         super().__init__()
+
+        self.num_layers = num_layers
 
         self.cam_in = nn.Linear(cam_dim, hidden_dim)
 
@@ -75,14 +80,15 @@ class CameraDiffusionModel(nn.Module):
                     nhead=num_heads,
                     batch_first=True
                 ),
-                CrossAttention(hidden_dim, num_heads)
+                CrossAttention(hidden_dim, num_heads),
             ])
             for _ in range(num_layers)
         ])
 
         self.out = nn.Linear(hidden_dim, cam_dim)
+        self.cross_attn_weight = None
 
-    def forward(self, x_t, t, text_emb, point_emb, point_len):
+    def forward(self, x_t, t, text_emb, text_mask, point_emb, point_mask):
         B, T, _ = x_t.shape
 
         h = self.cam_in(x_t)
@@ -96,13 +102,23 @@ class CameraDiffusionModel(nn.Module):
 
         h = h + t_embed
         
-        text_tok = self.text_proj(text_emb).unsqueeze(1)
+        text_tok = self.text_proj(text_emb)
         point_tok = self.point_proj(point_emb)
         context = torch.cat([text_tok, point_tok], dim=1)
+        context_pos_emb = positional_encoding(context.shape[-2], context.shape[-1], device=context.device).unsqueeze(0).expand(B, -1, -1)
+        context += context_pos_emb
+        mask = torch.cat([text_mask, point_mask], dim=1)
 
-        for self_attn, cross in self.layers:
+        for self_attn, cross_attn in self.layers:
             h = self_attn(h)
-            h = cross(h, context) + h
+            h = cross_attn(h, context, key_padding_mask=~mask) + h
+            if self.training is False:
+                if self.cross_attn_weight is None:
+                    self.cross_attn_weight = cross_attn.attn_weight
+                else:
+                    self.cross_attn_weight += cross_attn.attn_weight
+        if self.training is False:
+            self.cross_attn_weight /= self.num_layers
 
         return self.out(h)   # (B, T, 9)
     

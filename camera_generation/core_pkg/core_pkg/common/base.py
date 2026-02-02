@@ -10,7 +10,7 @@ import torch.optim
 import torchvision.transforms as transforms
 from torch.nn.parallel.data_parallel import DataParallel
 from torch.utils.data.dataloader import default_collate
-from model import get_model
+from core_pkg.models.camera_diffusion_model import get_model
 from dataset import CamDataset
 
 class Base(object):
@@ -48,7 +48,10 @@ class Trainer(Base):
         # data load and construct batch generator
         self.trainset_loader = CamDataset(cfg=self.cfg)
         self.itr_per_epoch = math.ceil(len(self.trainset_loader) / self.cfg.num_gpus / self.cfg.batch_size)
-        self.batch_generator = DataLoader(dataset=self.trainset_loader, batch_size=self.cfg.num_gpus*self.cfg.batch_size, shuffle=True, num_workers=self.cfg.num_thread, collate_fn=collate_fn)
+        self.batch_generator = DataLoader(dataset=self.trainset_loader, \
+                                          batch_size=self.cfg.num_gpus*self.cfg.batch_size, \
+                                            shuffle=True, num_workers=self.cfg.num_thread, \
+                                            persistent_workers=True, collate_fn=collate_fn)
 
     def _make_model(self):
         model = get_model()
@@ -76,10 +79,7 @@ def collate_fn(batch):
             key: (
                 collate_fn([d[key] for d in batch])
                 if key is not "pc"
-                else torch.cat(
-                    [torch.as_tensor(d[key]) for d in batch],
-                    dim=0,
-                )
+                else [torch.as_tensor(d[key]) for d in batch]
             )
             for key in batch[0]
         }
