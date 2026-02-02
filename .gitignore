@@ -10,3 +10,4 @@ wandb
 *.png
 *.mp4
 *.txt
+*.pt
