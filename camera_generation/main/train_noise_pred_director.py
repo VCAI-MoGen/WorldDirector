@@ -8,11 +8,11 @@ import datetime
 
 from config import cfg, cfg_dict
 from core_pkg.common.base import Trainer
-from core_pkg.models.camera_diffusion_model_director import CameraDiffusionModel
+from core_pkg.models.camera_diffusion_model import CameraDiffusionModel
 from core_pkg.models.pc_encoder import PCEncoder
 from core_pkg.models.vae_intr import CameraVAE
 from core_pkg.models.t5 import T5EncoderModel
-from diffusers import DDIMScheduler
+from diffusers import DDPMScheduler, DDIMScheduler
 
 @torch.no_grad()
 def sample(model, scheduler, traj_len, text_emb, text_masks, point_emb, point_mask):
@@ -40,15 +40,20 @@ def train():
     ckpt_dir = os.path.join(result_dir, 'ckpts')
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    wandb.init(project="my-diffusion-training-noise-pred-director", name=f"exp_{exp_name}", config=cfg_dict)
+    wandb.init(project="my-diffusion-training-noise-pred-ddpm", name=f"exp_{exp_name}", config=cfg_dict)
 
     trainer = Trainer(cfg=cfg)
     trainer._make_batch_generator()
     trainer._make_model()
 
-    noise_scheduler = DDIMScheduler(
-        num_train_timesteps=T,
-    )
+    if cfg.sampling_type == "ddpm":
+        noise_scheduler = DDPMScheduler(
+            num_train_timesteps=T,
+        )
+    elif cfg.sampling_type == "ddim":
+        noise_scheduler = DDIMScheduler(
+            num_train_timesteps=T,
+        )    
     noise_scheduler.set_timesteps(num_inference_steps=cfg.diffusion_inference_step, device=device)
 
     model = CameraDiffusionModel().cuda()
