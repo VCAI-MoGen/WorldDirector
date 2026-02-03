@@ -8,7 +8,7 @@ import datetime
 
 from config import cfg, cfg_dict
 from core_pkg.common.base import Trainer
-from core_pkg.models.camera_diffusion_model import CameraDiffusionModel
+from core_pkg.models.camera_diffusion_model_director import CameraDiffusionModel
 from core_pkg.models.pc_encoder import PCEncoder
 from core_pkg.models.vae_intr import CameraVAE
 from core_pkg.models.t5 import T5EncoderModel

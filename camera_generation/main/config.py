@@ -20,6 +20,7 @@ class Config:
     save_epoch = 10
     diffusion_max_step = 1000
     diffusion_inference_step = 1000
+    sampling_type = 'ddpm'
 
     vae_beta = 1e-3
     vae_latent_scale = 0.48848
