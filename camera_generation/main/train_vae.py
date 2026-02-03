@@ -9,7 +9,7 @@ import datetime
 from config import cfg, cfg_dict
 from core_pkg.common.base import Trainer
 from core_pkg.common.utils.rotation_utils import compute_rotation_matrix_from_ortho6d
-from core_pkg.models.vae_intr_large import CameraVAE
+from core_pkg.models.vae_intr import CameraVAE
 from torch.utils.data import DataLoader
 
 def camera_vae_loss(x, x_hat, mu, logvar, beta=cfg.vae_beta):
@@ -76,7 +76,7 @@ def train():
         wandb.log({'train/' + k: sum(v) / len(v) for k, v in loss_info.items()})
 
         # sampling each epoch
-        if epoch % 100 == 0:
+        if epoch % cfg.save_epoch == 0:
             with torch.no_grad():
                 z = model.encode(traj)
                 out = model.decode(z)

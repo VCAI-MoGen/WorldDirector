@@ -10,56 +10,10 @@ from core_pkg.common.base import Trainer
 from core_pkg.models.camera_diffusion_model import CameraDiffusionModel
 from core_pkg.models.pc_encoder import PCEncoder
 from core_pkg.models.vae_intr import CameraVAE
-from core_pkg.common.utils.rotation_utils import compute_rotation_matrix_from_ortho6d
 from core_pkg.models.t5 import T5EncoderModel
 from core_pkg.common.utils.vis_utils import attention_bar, attn_to_color
+from core_pkg.common.utils.data_utils import out_to_trajectory, make_intrinsics
 
-def out_to_trajectory(out, scale, e0, device):
-    """
-    out: (B, N, 9)
-
-    matrix_trajectory: (B, N, 4, 4)
-    """
-    if out.shape[-1] > 9:
-        out = out[:, :, :9]
-    matrix_trajectory = torch.eye(4, device=device)[None].repeat(out.shape[1], 1, 1)[None].repeat(out.shape[0], 1, 1, 1)
-
-    raw_trans = out[:, :, 6:] * scale
-    matrix_trajectory[:, :, :3, 3] = raw_trans
-
-    rot6d = out[:, :, :6]
-    for idx, rot in enumerate(rot6d):
-        raw_rot = compute_rotation_matrix_from_ortho6d(rot)
-        matrix_trajectory[idx, :, :3, :3] = raw_rot
-    print(f'before denormalize\n{matrix_trajectory[0][0]}')
-    matrix_trajectory = e0 @ matrix_trajectory
-
-    return matrix_trajectory
-
-def make_intrinsics(fx_fy, width, height):
-    """
-    fx_fy: (N, 2)
-    width, height: scalars
-    returns: (N, 3, 3)
-    """
-    N = fx_fy.shape[0]
-    device = fx_fy.device
-    dtype = fx_fy.dtype
-
-    fx = fx_fy[:, 0] * width
-    fy = fx_fy[:, 1] * height
-
-    cx = width * 0.5
-    cy = height * 0.5
-
-    K = torch.zeros((N, 3, 3), device=device, dtype=dtype)
-    K[:, 0, 0] = fx
-    K[:, 1, 1] = fy
-    K[:, 0, 2] = cx
-    K[:, 1, 2] = cy
-    K[:, 2, 2] = 1.0
-
-    return K
 
 def make_beta_schedule(T, start=1e-4, end=0.02):
     return torch.linspace(start, end, T)
@@ -163,8 +117,8 @@ def train():
             traj = data['cam_param'].cuda()
             E0 = data['first_extrinsic'].cuda()
             scale = data['avg_scale'].cuda()
-            width = data['width']
-            height = data['height']
+            width = data['width'].cuda()
+            height = data['height'].cuda()
 
             pc_embeds, pc_masks, point_obj = pc_encoder(point)
             text_embeds, text_masks = text_encoder(text, device)
@@ -175,15 +129,17 @@ def train():
             out = sample(model, T, beta, alpha.cuda(), a_cum, text_embeds.float(), text_masks.bool(), pc_embeds, pc_masks, traj_len)
 
             val_loss = F.mse_loss(out, traj_latents)
-            print("Loss:", val_loss.item())
+            print("Loss (Latent):", val_loss.item())
 
             out = camera_vae.decode(out * cfg.vae_latent_scale)
+            traj_loss = F.mse_loss(out, traj)
+            print("Loss (Traj):", traj_loss.item())
 
             print("Intrinsics (pred, gt)")
-            pred_intrinsics = make_intrinsics(out[0, :, -2:], width[0], height[0])
-            gt_intrinsics = make_intrinsics(traj[0, :, -2:], width[0], height[0])
-            print(pred_intrinsics[0])
-            print(gt_intrinsics[0])
+            pred_intrinsics = make_intrinsics(out[:, :, -2:], width, height)
+            gt_intrinsics = make_intrinsics(traj[:, :, -2:], width, height)
+            print(pred_intrinsics[0][0])
+            print(gt_intrinsics[0][0])
 
             pred_traj = out_to_trajectory(out, scale, E0, device)
             gt_traj = out_to_trajectory(traj, scale, E0, device)
@@ -192,9 +148,9 @@ def train():
             print(gt_traj[0][0])
 
             pred_path = os.path.join(result_dir, f'{os.path.basename(data_name[0])}_pred.npz')
-            np.savez(pred_path, poses=pred_traj[0].cpu().numpy(), intrinsics=pred_intrinsics.cpu().numpy())
+            np.savez(pred_path, poses=pred_traj[0].cpu().numpy(), intrinsics=pred_intrinsics[0].cpu().numpy())
             gt_path = os.path.join(result_dir, f'{os.path.basename(data_name[0])}_gt.npz')
-            np.savez(gt_path, poses=gt_traj[0].cpu().numpy(), intrinsics=gt_intrinsics.cpu().numpy())
+            np.savez(gt_path, poses=gt_traj[0].cpu().numpy(), intrinsics=gt_intrinsics[0].cpu().numpy())
 
             print("Data_name")
             print(data_name)
@@ -207,36 +163,36 @@ def train():
             print("Scene save")
             scene_point = point[0][:, :3].cuda()
             scene_point = scene_point * scale[0]
-            point[0][:, :3] = scene_point @ E0[:3, :3].T + E0[:3, 3]
+            point[0][:, :3] = scene_point @ E0[0, :3, :3].T + E0[0, :3, 3]
             # torch.save(point[0].cpu(), 'scene.pt')
 
-            if hasattr(model, "cross_attn_weight"):
-                cross_attn_weight = model.cross_attn_weight
-                text_weight = cross_attn_weight[0, :, :512]
-                point_weight = cross_attn_weight[0, :, 512:]
+            # if hasattr(model, "cross_attn_weight"):
+            #     cross_attn_weight = model.cross_attn_weight
+            #     text_weight = cross_attn_weight[0, :, :512]
+            #     point_weight = cross_attn_weight[0, :, 512:]
 
-                print('Text max attention')
-                text_max, text_max_idx = text_weight.max(dim=-1)
-                print(text_max, text_max_idx)
+            #     print('Text max attention')
+            #     text_max, text_max_idx = text_weight.max(dim=-1)
+            #     print(text_max, text_max_idx)
 
-                print('Point max attention')
-                point_max, point_max_idx = point_weight.max(dim=-1)
-                print(point_max, point_max_idx)
+            #     print('Point max attention')
+            #     point_max, point_max_idx = point_weight.max(dim=-1)
+            #     print(point_max, point_max_idx)
 
-                text_tokens = text_encoder.tokenizer.tokenizer.tokenize(text[0])
-                attention_path = os.path.join(result_dir, "text_attention.png")
-                attention_bar(tokens=text_tokens, attn=text_weight.mean(dim=0)[:len(text_tokens)], save_path=attention_path)
+            #     text_tokens = text_encoder.tokenizer.tokenizer.tokenize(text[0])
+            #     attention_path = os.path.join(result_dir, "text_attention.png")
+            #     attention_bar(tokens=text_tokens, attn=text_weight.mean(dim=0)[:len(text_tokens)], save_path=attention_path)
 
-                print("Text attention saved in : ", attention_path)
-                print(text_tokens)
+            #     print("Text attention saved in : ", attention_path)
+            #     print(text_tokens)
 
-                _, _, point_attention = pc_encoder.decode_with_attention(point_obj[0], point_weight.mean(dim=0)[:, None], recover_origin_scale=True) # (N_points, 1)
-                point_attn_vis = attn_to_color(point_attention[:, 0].detach().cpu().numpy())
-                point_attention_path = os.path.join(result_dir, "point_attention.pt")
-                point[0][:, 3:] = torch.tensor(point_attn_vis)
-                torch.save(point[0].cpu(), point_attention_path)
+            #     _, _, point_attention = pc_encoder.decode_with_attention(point_obj[0], point_weight.mean(dim=0)[:, None], recover_origin_scale=True) # (N_points, 1)
+            #     point_attn_vis = attn_to_color(point_attention[:, 0].detach().cpu().numpy())
+            #     point_attention_path = os.path.join(result_dir, "point_attention.pt")
+            #     point[0][:, 3:] = torch.tensor(point_attn_vis)
+            #     torch.save(point[0].cpu(), point_attention_path)
 
-                print('Point attention saved in : ', point_attention_path)
+            #     print('Point attention saved in : ', point_attention_path)
             input()
 
 if __name__ == "__main__":

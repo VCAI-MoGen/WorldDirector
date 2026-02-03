@@ -255,7 +255,7 @@ class CrossAttentionSABlock(nn.Module):
             self.ca_ln(tokens),
             cond,
             attention_mask=token_mask,
-            key_padding_mask=cond_mask,
+            key_padding_mask=~cond_mask,
         )
         ca_output = torch.nan_to_num(
             ca_output, nan=0.0, posinf=0.0, neginf=0.0
@@ -469,8 +469,10 @@ class CameraDiffusionModel(nn.Module):
 
         text_tok = self.text_proj(text_emb)
         point_tok = self.point_proj(point_emb)
-        context = torch.cat([t.unsqueeze(1), text_tok, point_tok], dim=1)
-        context_mask = torch.cat([t_mask.to(text_mask), text_mask, point_mask], dim=1)
+        # context = torch.cat([t.unsqueeze(1), text_tok, point_tok], dim=1)
+        context = torch.cat([t.unsqueeze(1), text_tok], dim=1)
+        # context_mask = torch.cat([t_mask.to(text_mask), text_mask, point_mask], dim=1)
+        context_mask = torch.cat([t_mask.to(text_mask), text_mask], dim=1)
         context = self.cond_positional_embedding(context)
         
         for block in self.cond_sa:

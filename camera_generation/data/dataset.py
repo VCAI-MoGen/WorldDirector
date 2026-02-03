@@ -121,11 +121,9 @@ class CamDataset(torch.utils.data.Dataset):
         normalized_fx = (fx / width)[:, None] # (N, 1)
         normalized_fy = (fy / height)[:, None] # (N, 1)
 
-        normalized_intrinsics = np.concatenate([normalized_fx, normalized_fy], axis=-1).astype(np.float32)
+        normalized_intrinsics = torch.cat([normalized_fx, normalized_fy], dim=-1).to(torch.float32)
 
-        cam_param = np.concatenate([normalized_extrinsics[:, :3, 0], normalized_extrinsics[:, :3, 1], normalized_extrinsics[:, :3, 3], normalized_intrinsics], axis=-1).astype(np.float32) # (N_cam, 11)
-        # cam_param = np.concatenate([normalized_extrinsics[:, :3, 0], normalized_extrinsics[:, :3, 1], normalized_extrinsics[:, :3, 3]], axis=-1).astype(np.float32) # (N_cam, 9)
-
+        cam_param = torch.cat([normalized_extrinsics[:, :3, 0], normalized_extrinsics[:, :3, 1], normalized_extrinsics[:, :3, 3], normalized_intrinsics], dim=-1).to(torch.float32) # (N_cam, 11)
         first_extrinsic = extrinsics[0]
 
         scene_data[:, :3] = normalized_scene_pc
