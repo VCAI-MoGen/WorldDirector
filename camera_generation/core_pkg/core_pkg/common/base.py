@@ -78,7 +78,7 @@ def collate_fn(batch):
         batch = {
             key: (
                 collate_fn([d[key] for d in batch])
-                if key is not "pc"
+                if key != "pc"
                 else [torch.as_tensor(d[key]) for d in batch]
             )
             for key in batch[0]

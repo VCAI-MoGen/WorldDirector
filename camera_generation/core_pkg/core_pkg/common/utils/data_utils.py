@@ -5,7 +5,7 @@ from core_pkg.common.utils.rotation_utils import compute_rotation_matrix_from_or
 SCENE_CUTTING_THRESHOLD = 90
 MAX_POINTS = 16_000_000
 
-def normalize_camera_extrinsics_and_points(extrinsics, points, scene_cutting_threshold=SCENE_CUTTING_THRESHOLD):
+def normalize_camera_extrinsics_and_points(extrinsics, points=None, scene_cutting_threshold=SCENE_CUTTING_THRESHOLD, saved_avg_scale=None):
     """
     extrinsics: (N, 4, 4) torch.Tensor (w2c)
     points: (M, 3) torch.Tensor
@@ -15,7 +15,8 @@ def normalize_camera_extrinsics_and_points(extrinsics, points, scene_cutting_thr
     avg_scale: (1,)
     """
     orig_dtype = extrinsics.dtype
-    points = points.to(dtype=extrinsics.dtype, device=extrinsics.device)
+    if points is not None:
+        points = points.to(dtype=extrinsics.dtype, device=extrinsics.device)
 
     # inverse in float32 for stability (important for bf16)
     e0_inv = torch.linalg.inv(extrinsics[0].float()).to(orig_dtype)
@@ -27,23 +28,33 @@ def normalize_camera_extrinsics_and_points(extrinsics, points, scene_cutting_thr
     R = extrinsics[0, :3, :3]
     t = extrinsics[0, :3, 3]
 
-    new_points = points @ R.T + t
+    if points is not None:
+        new_points = points @ R.T + t
 
     # scale: (1,)
-    avg_scale = new_points.norm(dim=-1).mean().unsqueeze(0)
+    if points is not None:
+        avg_scale = new_points.norm(dim=-1).mean().unsqueeze(0)
+    elif saved_avg_scale is not None:
+        avg_scale = torch.tensor(saved_avg_scale)
+    else:
+        avg_scale = torch.tensor(1)
 
-    normalized_points = new_points / avg_scale
+    normalized_points = None
+    if points is not None:
+        normalized_points = new_points / avg_scale
     normalized_extrinsics[:, :3, 3] /= avg_scale
 
     # scene cutting
-    d = torch.norm(normalized_points, dim=1)
-    if normalized_points.shape[0] > MAX_POINTS:
-        idx = torch.randperm(normalized_points.shape[0], device=extrinsics.device)[:MAX_POINTS]
-        d_sample = d[idx]
-    else:
-        d_sample = d
-    r = torch.quantile(d_sample, scene_cutting_threshold / 100)
-    mask = d <= r
+    mask = None
+    if points is not None:
+        d = torch.norm(normalized_points, dim=1)
+        if normalized_points.shape[0] > MAX_POINTS:
+            idx = torch.randperm(normalized_points.shape[0], device=extrinsics.device)[:MAX_POINTS]
+            d_sample = d[idx]
+        else:
+            d_sample = d
+        r = torch.quantile(d_sample, scene_cutting_threshold / 100)
+        mask = d <= r
 
     return normalized_extrinsics, normalized_points, avg_scale, mask
 

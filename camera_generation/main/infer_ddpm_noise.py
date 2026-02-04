@@ -8,11 +8,14 @@ import datetime
 from config import cfg
 from core_pkg.common.base import Trainer
 from core_pkg.models.camera_diffusion_model import CameraDiffusionModel
+# from core_pkg.models.camera_diffusion_model_director import CameraDiffusionModel
 from core_pkg.models.pc_encoder import PCEncoder
 from core_pkg.models.vae_intr import CameraVAE
 from core_pkg.models.t5 import T5EncoderModel
 from core_pkg.common.utils.vis_utils import attention_bar, attn_to_color
 from core_pkg.common.utils.data_utils import out_to_trajectory, make_intrinsics
+
+from diffusers import DDPMScheduler, DDIMScheduler
 
 
 def make_beta_schedule(T, start=1e-4, end=0.02):
@@ -25,14 +28,17 @@ def compute_alpha_cumprod(alpha):
     return torch.cumprod(alpha, dim=0)
 
 @torch.no_grad()
-def sample(model, T, beta, alphas, alphas_cumprod, text_emb, text_masks, point_emb, point_mask, traj_len):
+def sample_deprecated(model, T, beta, alphas, alphas_cumprod, text_emb, text_masks, traj_len, point_emb=None, point_mask=None):
     B = text_emb.size(0)
     device = text_emb.device
     x_t = torch.randn(B, traj_len, 32).to(device)
 
     for t in reversed(range(T)):
         ts = torch.full((B,), t, device=device, dtype=torch.long)
-        eps_pred = model(x_t, ts.float(), text_emb, text_masks, point_emb, point_mask)
+        if point_emb is not None:
+            eps_pred = model(x_t, ts.float(), text_emb, text_masks, point_emb, point_mask)
+        else:
+            eps_pred = model(x_t, ts.float(), text_emb, text_masks)
         
         alpha_t = alphas[t]
         alpha_cum_t = alphas_cumprod[t]
@@ -47,6 +53,25 @@ def sample(model, T, beta, alphas, alphas_cumprod, text_emb, text_masks, point_e
             x_t = mean + sigma_t * noise
         else:
             x_t = mean
+    return x_t
+
+@torch.no_grad()
+def sample(model, scheduler, traj_len, text_emb, text_masks, point_emb=None, point_mask=None):
+    B = text_emb.size(0)
+    device = text_emb.device
+    x_t = torch.randn(B, traj_len, 32).to(device)
+
+    for t in scheduler.timesteps:
+        timesteps = torch.full(
+            (B,),
+            t,
+            device=device,
+        )
+        if point_emb is not None:
+            noise_pred = model(x_t, timesteps.float(), text_emb, text_masks, point_emb, point_mask)
+        else:
+            noise_pred = model(x_t, timesteps.float(), text_emb, text_masks)
+        x_t = scheduler.step(noise_pred, t, x_t).prev_sample
     return x_t
 
 def diffusion_loss(model, x0, ts, alphas_cumprod, text_emb, point_emb):
@@ -72,7 +97,9 @@ def train():
     cfg.batch_size = 1
 
     device = 'cuda:0'
-    ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260131_073303/ckpts/160.pth'
+    # ckpt_path = '/data1/cympyc1785/SCVideo/camera_generation/results/20260203_124603/ckpts/50.pth'
+    ckpt_path = '/data1/cympyc1785/SCVideo/camera_generation/results/20260203_103416/ckpts/50.pth'
+    target_name = '001dccbc1f78146a9f03861026613d8e73f39f372b545b26118e37a23c740d5f'
     exp_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     result_dir = os.path.abspath(os.path.join('../infer_ddpm', exp_name))
     os.makedirs(result_dir, exist_ok=True)
@@ -81,17 +108,28 @@ def train():
     trainer._make_batch_generator()
     trainer._make_model()
 
-    # diffusion schedule
-    beta = make_beta_schedule(T)
-    alpha = compute_alpha(beta)
-    a_cum = compute_alpha_cumprod(alpha).cuda()
+    if cfg.sampling_type == "ddpm":
+        noise_scheduler = DDPMScheduler(
+            num_train_timesteps=T,
+        )
+    elif cfg.sampling_type == "ddim":
+        noise_scheduler = DDIMScheduler(
+            num_train_timesteps=T,
+        )
+    noise_scheduler.set_timesteps(num_inference_steps=cfg.diffusion_inference_step, device=device)
+
+    # # diffusion schedule
+    # beta = make_beta_schedule(T)
+    # alpha = compute_alpha(beta)
+    # a_cum = compute_alpha_cumprod(alpha).cuda()
 
     # model
     model = CameraDiffusionModel().cuda()
     model.load_state_dict(torch.load(ckpt_path, weights_only=True))
     model.eval()
 
-    pc_encoder = PCEncoder()
+    if cfg.load_points:
+        pc_encoder = PCEncoder()
     text_encoder = T5EncoderModel(
         text_len=cfg.text_len,
         dtype=cfg.t5_dtype,
@@ -109,10 +147,22 @@ def train():
     )
     camera_vae.eval()
     pbar = tqdm(trainer.batch_generator)
+    # dataloader = trainer.trainset_loader
+
+    model.eval()
     with torch.no_grad():
         for step, data in enumerate(pbar):
+            # data_name = [data['data_name']]
+            # text = [data['text_prompt']]
+            # traj = data['cam_param'].unsqueeze(-1).cuda()
+            # E0 = data['first_extrinsic'].unsqueeze(-1).cuda()
+            # scale = data['avg_scale'].unsqueeze(-1).cuda()
+            # width = data['width'].unsqueeze(-1).cuda()
+            # height = data['height'].unsqueeze(-1).cuda()
+
             data_name = data['data_name']
-            point = data['pc']
+            if data_name != target_name:
+                continue
             text = data['text_prompt']
             traj = data['cam_param'].cuda()
             E0 = data['first_extrinsic'].cuda()
@@ -120,13 +170,23 @@ def train():
             width = data['width'].cuda()
             height = data['height'].cuda()
 
-            pc_embeds, pc_masks, point_obj = pc_encoder(point)
+            if cfg.load_points:
+                point = data['pc']
+                pc_embeds, pc_masks, point_obj = pc_encoder(point)
+            
             text_embeds, text_masks = text_encoder(text, device)
             text_embeds = text_embeds.float()
             text_masks = text_masks.bool()
 
             traj_latents = camera_vae.encode(traj / cfg.vae_latent_scale)
-            out = sample(model, T, beta, alpha.cuda(), a_cum, text_embeds.float(), text_masks.bool(), pc_embeds, pc_masks, traj_len)
+            # if cfg.load_points:
+            #     out = sample(model, T, beta, alpha.cuda(), a_cum, text_embeds.float(), text_masks.bool(), traj_len, pc_embeds, pc_masks)
+            # else:
+            #     out = sample(model, T, beta, alpha.cuda(), a_cum, text_embeds.float(), text_masks.bool(), traj_len)
+            if cfg.load_points:
+                out = sample(model, noise_scheduler, traj_len, text_embeds, text_masks, pc_embeds, pc_masks)
+            else:
+                out = sample(model, noise_scheduler, traj_len, text_embeds, text_masks)
 
             val_loss = F.mse_loss(out, traj_latents)
             print("Loss (Latent):", val_loss.item())
@@ -154,16 +214,18 @@ def train():
 
             print("Data_name")
             print(data_name)
+            print("Data_path")
+            print(f"/data1/cympyc1785/SceneData/DL3DV/scenes/1K/{data_name[0]}")
             print("Prediction, GT path")
             print(pred_path)
             print(gt_path)
             print("Text Prompt")
             print(text)
 
-            print("Scene save")
-            scene_point = point[0][:, :3].cuda()
-            scene_point = scene_point * scale[0]
-            point[0][:, :3] = scene_point @ E0[0, :3, :3].T + E0[0, :3, 3]
+            # print("Scene save")
+            # scene_point = point[0][:, :3].cuda()
+            # scene_point = scene_point * scale[0]
+            # point[0][:, :3] = scene_point @ E0[0, :3, :3].T + E0[0, :3, 3]
             # torch.save(point[0].cpu(), 'scene.pt')
 
             # if hasattr(model, "cross_attn_weight"):
@@ -193,7 +255,7 @@ def train():
             #     torch.save(point[0].cpu(), point_attention_path)
 
             #     print('Point attention saved in : ', point_attention_path)
-            input()
+            exit()
 
 if __name__ == "__main__":
     train()

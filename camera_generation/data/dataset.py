@@ -111,8 +111,17 @@ class CamDataset(torch.utils.data.Dataset):
         scene_path = self.scene_paths[idx]
         text_prompt = self.text_prompts[idx]
 
-        scene_data = torch.load(scene_path) # (N, 6), coordinates (3) + color (3)
-        normalized_extrinsics, normalized_scene_pc, avg_scale, mask = normalize_camera_extrinsics_and_points(extrinsics, scene_data[:, :3])
+        load_points = self.cfg.load_points
+
+        saved_avg_scale_path = os.path.join(os.path.dirname(scene_path), "point_avg_scale.json")
+        if os.path.exists(saved_avg_scale_path):
+            saved_avg_scale = json.load(open(saved_avg_scale_path, "r"))
+
+        if load_points:
+            scene_data = torch.load(scene_path) # (N, 6), coordinates (3) + color (3)
+            normalized_extrinsics, normalized_scene_pc, avg_scale, mask = normalize_camera_extrinsics_and_points(extrinsics, scene_data[:, :3])
+        else:
+            normalized_extrinsics, _, avg_scale, mask = normalize_camera_extrinsics_and_points(extrinsics, saved_avg_scale=saved_avg_scale)
 
         fx = intrinsics[:, 0, 0]
         fy = intrinsics[:, 1, 1]
@@ -126,8 +135,9 @@ class CamDataset(torch.utils.data.Dataset):
         cam_param = torch.cat([normalized_extrinsics[:, :3, 0], normalized_extrinsics[:, :3, 1], normalized_extrinsics[:, :3, 3], normalized_intrinsics], dim=-1).to(torch.float32) # (N_cam, 11)
         first_extrinsic = extrinsics[0]
 
-        scene_data[:, :3] = normalized_scene_pc
-        scene_data = scene_data[mask]
+        if load_points:
+            scene_data[:, :3] = normalized_scene_pc
+            scene_data = scene_data[mask]
 
         data = {
             'data_name': data_name,
@@ -136,8 +146,10 @@ class CamDataset(torch.utils.data.Dataset):
             'width': width,
             'height': height,
             'avg_scale': avg_scale,
-            'pc': scene_data,
             'text_prompt': text_prompt
         }
+
+        if load_points:
+            data['pc'] = scene_data
         
         return data

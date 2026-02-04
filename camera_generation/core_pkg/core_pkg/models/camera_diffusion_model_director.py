@@ -461,18 +461,21 @@ class CameraDiffusionModel(nn.Module):
         self.out_norm = layer_norm(hidden_dim, eps=1e-6)
         self.out = nn.Linear(hidden_dim, cam_dim)
 
-    def forward(self, x_t, t, text_emb, text_mask, point_emb, point_mask):
+    def forward(self, x_t, t, text_emb, text_mask, point_emb=None, point_mask=None):
         B = x_t.shape[0]
         h = self.cam_in(x_t)
         t = self.time_embedding(t)
         t_mask = torch.ones((B, 1)).bool()
 
         text_tok = self.text_proj(text_emb)
-        point_tok = self.point_proj(point_emb)
-        # context = torch.cat([t.unsqueeze(1), text_tok, point_tok], dim=1)
-        context = torch.cat([t.unsqueeze(1), text_tok], dim=1)
-        # context_mask = torch.cat([t_mask.to(text_mask), text_mask, point_mask], dim=1)
-        context_mask = torch.cat([t_mask.to(text_mask), text_mask], dim=1)
+        if point_emb is not None:
+            point_tok = self.point_proj(point_emb)
+            context = torch.cat([t.unsqueeze(1), text_tok, point_tok], dim=1)
+            context_mask = torch.cat([t_mask.to(text_mask), text_mask, point_mask], dim=1)
+        else:
+            context = torch.cat([t.unsqueeze(1), text_tok], dim=1)
+            context_mask = torch.cat([t_mask.to(text_mask), text_mask], dim=1)
+        
         context = self.cond_positional_embedding(context)
         
         for block in self.cond_sa:

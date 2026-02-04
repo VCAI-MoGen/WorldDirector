@@ -12,11 +12,16 @@ class Config:
     # dataset_dir = osp.join('/data1/cympyc1785/SceneData/DL3DV/scenes/1K')
     dataset_dir = osp.join('/data1/cympyc1785/SceneData/DL3DV/scenes/1K')
 
+    load_points = False
+    use_lr_scheduler = False
+
     # Training
     lr = 1e-4
+    weight_decay = 0.01
     batch_size = 64
     accum_steps = 1
-    epochs = 50000
+    epochs = 50
+    warmup_epoch = int(0.05 * epochs)
     save_epoch = 10
     diffusion_max_step = 1000
     diffusion_inference_step = 1000
