@@ -14,56 +14,35 @@ from core_pkg.models.t5 import T5EncoderModel
 from core_pkg.common.utils.vis_utils import attention_bar, attn_to_color
 from core_pkg.common.utils.data_utils import out_to_trajectory, make_intrinsics
 
-
-def make_beta_schedule(T, start=1e-4, end=0.02):
-    return torch.linspace(start, end, T)
-
-def compute_alpha(beta):
-    return 1.0 - beta
-
-def compute_alpha_cumprod(alpha):
-    return torch.cumprod(alpha, dim=0)
+from diffusers import DDPMScheduler, DDIMScheduler
 
 @torch.no_grad()
-def sample(model, T, beta, alphas, alphas_cumprod, text_emb, text_masks, point_emb, point_mask, traj_len):
+def sample(model, scheduler, traj_len, text_emb, text_masks, point_emb, point_mask, from_t=None, traj_latents=None):
     B = text_emb.size(0)
     device = text_emb.device
+
     x_t = torch.randn(B, traj_len, 32).to(device)
+    noise = x_t.clone()
+    if from_t is not None and traj_latents is not None:
+        from_t = torch.tensor(from_t).to(device)
+        x_t = scheduler.add_noise(traj_latents, x_t, from_t)
 
-    for t in reversed(range(T)):
-        ts = torch.full((B,), t, device=device, dtype=torch.long)
-        eps_pred = model(x_t, ts.float(), text_emb, text_masks, point_emb, point_mask)
-        
-        alpha_t = alphas[t]
-        alpha_cum_t = alphas_cumprod[t]
-        beta_t = beta[t]
-        sqrt_one_minus_alpha_cum = torch.sqrt(1 - alpha_cum_t)
-        
-        mean = (1 / torch.sqrt(alpha_t)) * (x_t - (beta_t / sqrt_one_minus_alpha_cum) * eps_pred)
-        
-        if t > 0:
-            noise = torch.randn_like(x_t)
-            sigma_t = torch.sqrt(beta_t)
-            x_t = mean + sigma_t * noise
-        else:
-            x_t = mean
+    for t in scheduler.timesteps:
+        if from_t is not None and t > from_t:
+            continue
+        timesteps = torch.full(
+            (B,),
+            t,
+            device=device,
+        )
+        print(timesteps)
+        noise_pred = model(x_t, timesteps.float(), text_emb, text_masks, point_emb, point_mask)
+        print(t, F.mse_loss(noise_pred, noise))
+        output = scheduler.step(noise_pred, t, x_t)
+        x_t = output.prev_sample
+        clean_x = output.pred_original_sample
+        print(t, F.mse_loss(clean_x, traj_latents))
     return x_t
-
-def diffusion_loss(model, x0, ts, alphas_cumprod, text_emb, point_emb):
-    B = x0.shape[0]
-
-    noise = torch.randn_like(x0)
-    a = alphas_cumprod[ts].view(B, 1, 1)
-
-    x_t = torch.sqrt(a) * x0 + torch.sqrt(1 - a) * noise
-
-    x0_pred = model(x_t, ts.float(), text_emb, point_emb)
-
-    assert torch.isfinite(x0_pred).all()
-    assert torch.isfinite(x0).all()
-
-    return F.mse_loss(x0_pred, x0)
-    # return torch.abs(x0_pred - x0).mean()
 
 def train():
     # hyperparams
@@ -72,7 +51,7 @@ def train():
     cfg.batch_size = 1
 
     device = 'cuda:0'
-    ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260131_073303/ckpts/160.pth'
+    ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260205_043924/ckpts/80.pth'
     exp_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     result_dir = os.path.abspath(os.path.join('../infer_ddpm', exp_name))
     os.makedirs(result_dir, exist_ok=True)
@@ -81,10 +60,29 @@ def train():
     trainer._make_batch_generator()
     trainer._make_model()
 
-    # diffusion schedule
-    beta = make_beta_schedule(T)
-    alpha = compute_alpha(beta)
-    a_cum = compute_alpha_cumprod(alpha).cuda()
+    if cfg.sampling_type == "ddpm":
+        noise_scheduler = DDPMScheduler(
+            num_train_timesteps=T,
+            prediction_type=cfg.prediction_type,
+            beta_schedule=cfg.beta_schedule,
+            clip_sample=cfg.clip_sample,
+            set_alpha_to_one=cfg.set_alpha_to_one,
+            steps_offset=cfg.steps_offset,
+            beta_start=cfg.beta_start,
+            beta_end=cfg.beta_end,
+        )
+    elif cfg.sampling_type == "ddim":
+        noise_scheduler = DDIMScheduler(
+            num_train_timesteps=T,
+            prediction_type=cfg.prediction_type,
+            beta_schedule=cfg.beta_schedule,
+            clip_sample=cfg.clip_sample,
+            set_alpha_to_one=cfg.set_alpha_to_one,
+            steps_offset=cfg.steps_offset,
+            beta_start=cfg.beta_start,
+            beta_end=cfg.beta_end,
+        )    
+    noise_scheduler.set_timesteps(num_inference_steps=cfg.diffusion_inference_step, device=device)
 
     # model
     model = CameraDiffusionModel().cuda()
@@ -112,7 +110,6 @@ def train():
     with torch.no_grad():
         for step, data in enumerate(pbar):
             data_name = data['data_name']
-            point = data['pc']
             text = data['text_prompt']
             traj = data['cam_param'].cuda()
             E0 = data['first_extrinsic'].cuda()
@@ -120,13 +117,36 @@ def train():
             width = data['width'].cuda()
             height = data['height'].cuda()
 
-            pc_embeds, pc_masks, point_obj = pc_encoder(point)
+            if cfg.load_points:
+                point = data['pc']
+                pc_embeds, pc_masks, point_obj = pc_encoder(point)
+            else:
+                pc_embeds, pc_masks = None, None
+                
             text_embeds, text_masks = text_encoder(text, device)
             text_embeds = text_embeds.float()
             text_masks = text_masks.bool()
 
-            traj_latents = camera_vae.encode(traj / cfg.vae_latent_scale)
-            out = sample(model, T, beta, alpha.cuda(), a_cum, text_embeds.float(), text_masks.bool(), pc_embeds, pc_masks, traj_len)
+            traj_latents = camera_vae.encode(traj) / cfg.vae_latent_scale
+
+            # while True:
+            #     noise = torch.randn_like(traj_latents)
+                
+            #     timesteps = torch.randint(
+            #         0,
+            #         noise_scheduler.config.num_train_timesteps,
+            #         (traj_latents.shape[0],),
+            #         device=device,
+            #     ).long()
+            #     # timesteps[0] = 0
+            #     noisy_x = noise_scheduler.add_noise(traj_latents, noise, timesteps)
+            #     noise_pred = model(noisy_x, timesteps.float(), text_embeds, text_masks, pc_embeds, pc_masks)
+            #     loss = F.mse_loss(noise_pred, noise)
+            #     print(timesteps)
+            #     print(loss)
+            #     input()
+            # out = sample(model, noise_scheduler, traj_len, text_embeds, text_masks, pc_embeds, pc_masks)
+            out = sample(model, noise_scheduler, traj_len, text_embeds, text_masks, pc_embeds, pc_masks, from_t=999, traj_latents=traj_latents)
 
             val_loss = F.mse_loss(out, traj_latents)
             print("Loss (Latent):", val_loss.item())
@@ -143,6 +163,7 @@ def train():
 
             pred_traj = out_to_trajectory(out, scale, E0, device)
             gt_traj = out_to_trajectory(traj, scale, E0, device)
+            print(F.mse_loss(camera_vae.decode(traj_latents * cfg.vae_latent_scale), traj))
             print("after denormalize")
             print(pred_traj[0][0])
             print(gt_traj[0][0])
@@ -160,31 +181,33 @@ def train():
             print("Text Prompt")
             print(text)
 
-            print("Scene save")
-            scene_point = point[0][:, :3].cuda()
-            scene_point = scene_point * scale[0]
-            point[0][:, :3] = scene_point @ E0[0, :3, :3].T + E0[0, :3, 3]
+            # print("Scene save")
+            # scene_point = point[0][:, :3].cuda()
+            # scene_point = scene_point * scale[0]
+            # point[0][:, :3] = scene_point @ E0[0, :3, :3].T + E0[0, :3, 3]
             # torch.save(point[0].cpu(), 'scene.pt')
 
-            # if hasattr(model, "cross_attn_weight"):
-            #     cross_attn_weight = model.cross_attn_weight
-            #     text_weight = cross_attn_weight[0, :, :512]
-            #     point_weight = cross_attn_weight[0, :, 512:]
+            if hasattr(model, "cross_attn_weight"):
+                cross_attn_weight = model.cross_attn_weight
+                
 
-            #     print('Text max attention')
-            #     text_max, text_max_idx = text_weight.max(dim=-1)
-            #     print(text_max, text_max_idx)
+                print('Text max attention')
+                text_weight = cross_attn_weight[0, :, :512]
+                text_max, text_max_idx = text_weight.max(dim=-1)
+                print(text_max, text_max_idx)
 
+                text_tokens = text_encoder.tokenizer.tokenizer.tokenize(text[0])
+                attention_path = os.path.join(result_dir, "text_attention.png")
+                attention_bar(tokens=text_tokens, attn=text_weight.mean(dim=0)[:len(text_tokens)], save_path=attention_path)
+
+                print("Text attention saved in : ", attention_path)
+                print(text_tokens)
+
+                
             #     print('Point max attention')
+            #     point_weight = cross_attn_weight[0, :, 512:]
             #     point_max, point_max_idx = point_weight.max(dim=-1)
             #     print(point_max, point_max_idx)
-
-            #     text_tokens = text_encoder.tokenizer.tokenizer.tokenize(text[0])
-            #     attention_path = os.path.join(result_dir, "text_attention.png")
-            #     attention_bar(tokens=text_tokens, attn=text_weight.mean(dim=0)[:len(text_tokens)], save_path=attention_path)
-
-            #     print("Text attention saved in : ", attention_path)
-            #     print(text_tokens)
 
             #     _, _, point_attention = pc_encoder.decode_with_attention(point_obj[0], point_weight.mean(dim=0)[:, None], recover_origin_scale=True) # (N_points, 1)
             #     point_attn_vis = attn_to_color(point_attention[:, 0].detach().cpu().numpy())

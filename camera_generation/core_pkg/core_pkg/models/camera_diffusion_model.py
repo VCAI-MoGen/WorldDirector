@@ -88,7 +88,7 @@ class CameraDiffusionModel(nn.Module):
         self.out = nn.Linear(hidden_dim, cam_dim)
         self.cross_attn_weight = None
 
-    def forward(self, x_t, t, text_emb, text_mask, point_emb, point_mask):
+    def forward(self, x_t, t, text_emb, text_mask, point_emb=None, point_mask=None):
         B, T, _ = x_t.shape
 
         h = self.cam_in(x_t)
@@ -103,24 +103,26 @@ class CameraDiffusionModel(nn.Module):
         h = h + t_embed
         
         text_tok = self.text_proj(text_emb)
-        point_tok = self.point_proj(point_emb)
-        # context = torch.cat([text_tok, point_tok], dim=1)
-        context = text_tok
+        if point_emb is not None and point_mask is not None:
+            point_tok = self.point_proj(point_emb)
+            context = torch.cat([text_tok, point_tok], dim=1)
+            mask = torch.cat([text_mask, point_mask], dim=1)
+        else:
+            context = text_tok
+            mask = text_mask
         context_pos_emb = positional_encoding(context.shape[-2], context.shape[-1], device=context.device).unsqueeze(0).expand(B, -1, -1)
         context += context_pos_emb
-        # mask = torch.cat([text_mask, point_mask], dim=1)
-        mask = text_mask
-
+        
         for self_attn, cross_attn in self.layers:
             h = self_attn(h)
             h = cross_attn(h, context, key_padding_mask=~mask) + h
-        #     if self.training is False:
-        #         if self.cross_attn_weight is None:
-        #             self.cross_attn_weight = cross_attn.attn_weight
-        #         else:
-        #             self.cross_attn_weight += cross_attn.attn_weight
-        # if self.training is False:
-        #     self.cross_attn_weight /= self.num_layers
+            if self.training is False:
+                if self.cross_attn_weight is None:
+                    self.cross_attn_weight = cross_attn.attn_weight
+                else:
+                    self.cross_attn_weight += cross_attn.attn_weight
+        if self.training is False:
+            self.cross_attn_weight /= self.num_layers
 
         return self.out(h)   # (B, T, 9)
     

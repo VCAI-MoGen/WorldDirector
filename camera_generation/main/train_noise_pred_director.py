@@ -20,6 +20,7 @@ def sample(model, scheduler, traj_len, text_emb, text_masks, point_emb, point_ma
     device = text_emb.device
     x_t = torch.randn(B, traj_len, 32).to(device)
 
+    scheduler.set_timesteps(num_inference_steps=cfg.diffusion_inference_step, device=device)
     for t in scheduler.timesteps:
         timesteps = torch.full(
             (B,),
@@ -40,7 +41,7 @@ def train():
     ckpt_dir = os.path.join(result_dir, 'ckpts')
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    wandb.init(project="my-diffusion-training-noise-pred-ddpm", name=f"exp_{exp_name}", config=cfg_dict)
+    wandb.init(project=f"my-diffusion-training-noise-pred-director-{cfg.sampling_type}", name=f"exp_{exp_name}", config=cfg_dict)
 
     trainer = Trainer(cfg=cfg)
     trainer._make_batch_generator()
@@ -49,12 +50,25 @@ def train():
     if cfg.sampling_type == "ddpm":
         noise_scheduler = DDPMScheduler(
             num_train_timesteps=T,
+            prediction_type=cfg.prediction_type,
+            beta_schedule=cfg.beta_schedule,
+            clip_sample=cfg.clip_sample,
+            set_alpha_to_one=cfg.set_alpha_to_one,
+            steps_offset=cfg.steps_offset,
+            beta_start=cfg.beta_start,
+            beta_end=cfg.beta_end,
         )
     elif cfg.sampling_type == "ddim":
         noise_scheduler = DDIMScheduler(
             num_train_timesteps=T,
+            prediction_type=cfg.prediction_type,
+            beta_schedule=cfg.beta_schedule,
+            clip_sample=cfg.clip_sample,
+            set_alpha_to_one=cfg.set_alpha_to_one,
+            steps_offset=cfg.steps_offset,
+            beta_start=cfg.beta_start,
+            beta_end=cfg.beta_end,
         )    
-    noise_scheduler.set_timesteps(num_inference_steps=cfg.diffusion_inference_step, device=device)
 
     model = CameraDiffusionModel().cuda()
     model.train()
@@ -78,12 +92,15 @@ def train():
         pbar = tqdm(trainer.batch_generator)
         loss_info = {"loss": []}
         for step, data in enumerate(pbar):
-            point = data['pc']
             text_prompt = data['text_prompt']
             traj = data['cam_param'].cuda()
 
             with torch.no_grad():
-                pc_embeds, pc_masks, _ = pc_encoder(point)
+                if cfg.load_points:
+                    point = data['pc']
+                    pc_embeds, pc_masks, _ = pc_encoder(point)
+                else:
+                    pc_embeds, pc_masks = None, None
                 text_embeds, text_masks = text_encoder(text_prompt, device)
                 text_embeds = text_embeds.float()
                 text_masks = text_masks.bool()
@@ -120,9 +137,11 @@ def train():
                 out = sample(model, noise_scheduler, traj_len, text_embeds, text_masks, pc_embeds, pc_masks)
                 
                 val_loss = F.mse_loss(out, traj_latents)
-                wandb.log({"val/loss": val_loss.item()}, step=global_step)
+                wandb.log({"val/loss_latent": val_loss.item()}, step=global_step)
 
                 traj_pred = camera_vae.decode(out * cfg.vae_latent_scale)
+                val_loss = F.mse_loss(traj_pred, traj)
+                wandb.log({"val/loss_traj": val_loss.item()}, step=global_step)
 
             raw_trans = traj_pred[:, :, 6:]
             print(traj[0, :2, 6:])
