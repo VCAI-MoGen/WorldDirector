@@ -19,6 +19,8 @@ def attention_bar(
         tokens = [tokens[i] for i in idx]
         attn = attn[idx]
 
+    tokens = [f"{tok} [{i}]" for i, tok in enumerate(tokens)]
+
     plt.figure(figsize=(8, max(2, len(tokens) * 0.4)))
     plt.barh(tokens, attn)
     plt.gca().invert_yaxis()

@@ -16,14 +16,14 @@ from sklearn.decomposition import PCA
 def infer():
     # hyperparams
     device = 'cuda:0'
-    ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260202_065659/ckpts/0.pth'
+    ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260202_065659/ckpts/100.pth'
     exp_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     result_dir = os.path.abspath(os.path.join('../infer_vae', exp_name))
     os.makedirs(result_dir, exist_ok=True)
     output_dir = os.path.join(result_dir, 'output')
     os.makedirs(output_dir, exist_ok=True)
 
-    cfg.batch_size = 1
+    cfg.batch_size = 2
     trainer = Trainer(cfg=cfg)
     trainer._make_batch_generator()
     trainer._make_model()
@@ -50,18 +50,20 @@ def infer():
             zs.append(z.reshape(-1))
             
             # Random sampling
-            # z = torch.randn_like(z).to(z)
-            # print(z.shape)
-            # # z = model.reparameterize(mu, log_var)
-            # # z = z.transpose(-1, -2)
+            z = torch.randn_like(z).to(z) * cfg.vae_latent_scale
+            print(z.shape)
+            z = model.reparameterize(mu, log_var)
+            print(mu.mean(), mu.std())
+            print(z.mean(), z.std())
+            z = z.transpose(-1, -2)
             out = model.decode(z)
             val_loss = torch.abs(traj - out).mean()
 
-            pred_traj = out_to_trajectory(out, scale, E0, device)
-            gt_traj = out_to_trajectory(traj, scale, E0, device)
+            pred_traj = out_to_trajectory(out[0:1], scale[0:1], E0, device)
+            gt_traj = out_to_trajectory(traj[0:1], scale[0:1], E0, device)
 
-            pred_intrinsics = make_intrinsics(out[:, :, -2:], width, height)
-            gt_intrinsics = make_intrinsics(traj[:, :, -2:], width, height)
+            pred_intrinsics = make_intrinsics(out[0:1, :, -2:], width[0:1], height[0:1])
+            gt_intrinsics = make_intrinsics(traj[0:1, :, -2:], width[0:1], height[0:1])
 
             pred_path = os.path.join(result_dir, f'{os.path.basename(data_name[0])}_pred.npz')
             np.savez(pred_path, poses=pred_traj[0].cpu().numpy(), intrinsics=pred_intrinsics[0].cpu().numpy())
@@ -74,19 +76,20 @@ def infer():
             print(gt_path)
             input()
 
-            # # Feature Interpolation
-            # if z.shape[0] == 2:
-            #     feature_a, feature_b = z[0], z[1]
-            #     print(data_name[0], data_name[1])
-            #     for i in range(0, 11):
-            #         t = i / 10
-            #         interpolated_feat = feature_a * t + feature_b * (1 - t)
-            #         out = model.decode(interpolated_feat[None])
-            #         # scale = torch.ones((1, 1)).to(device)
-            #         # E0 = torch.eye(4)[None].to(device)
-            #         interpolated_traj = out_to_trajectory(out, scale[0:1], E0[0:1], device)
-            #         interpolated_traj_path = os.path.join(result_dir, f'{data_name[0]}_{data_name[1]}_{i}_{10-i}.npy')
-            #         np.save(interpolated_traj_path, interpolated_traj[0].cpu().numpy())
+            # Feature Interpolation
+            if z.shape[0] == 2:
+                feature_a, feature_b = z[0], z[1]
+                print(data_name[0], data_name[1])
+                for i in range(0, 11):
+                    t = i / 10
+                    interpolated_feat = feature_a * t + feature_b * (1 - t)
+                    out = model.decode(interpolated_feat[None])
+                    # scale = torch.ones((1, 1)).to(device)
+                    # E0 = torch.eye(4)[None].to(device)
+                    interpolated_traj = out_to_trajectory(out, scale[0:1], E0[0:1], device)
+                    interpolated_traj_path = os.path.join(result_dir, f'{data_name[0]}_{data_name[1]}_{i}_{10-i}.npy')
+                    np.save(interpolated_traj_path, interpolated_traj[0].cpu().numpy())
+                    print(interpolated_traj_path)
 
             # input()
     z_all = torch.stack(zs)

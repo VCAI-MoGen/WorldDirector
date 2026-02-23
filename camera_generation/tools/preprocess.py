@@ -125,8 +125,8 @@ class CamDataset(torch.utils.data.Dataset):
         print("Loading data...")
         for data_name in tqdm(sorted(data_list)):
             try:
-                # if data_name != "006771db3c057280f9277e735be6daa24339657ce999216c38da68002a443fed":
-                #     continue
+                if data_name != "006771db3c057280f9277e735be6daa24339657ce999216c38da68002a443fed":
+                    continue
                 data_path = osp.join(self.dataset_path, data_name)
                 # Scene processing
                 scene_path = osp.join(data_path, 'scene.ply')

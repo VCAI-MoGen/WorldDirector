@@ -40,12 +40,13 @@ def normalize_camera_extrinsics_and_points(extrinsics, points=None, avg_scale=No
         normalized_points = new_points / avg_scale
         # scene cutting
         d = torch.norm(normalized_points, dim=1)
-        if normalized_points.shape[0] > MAX_POINTS:
-            idx = torch.randperm(normalized_points.shape[0], device=extrinsics.device)[:MAX_POINTS]
-            d_sample = d[idx]
-        else:
-            d_sample = d
-        r = torch.quantile(d_sample, scene_cutting_threshold / 100)
+        # if normalized_points.shape[0] > MAX_POINTS:
+        #     idx = torch.randperm(normalized_points.shape[0], device=extrinsics.device)[:MAX_POINTS]
+        #     d_sample = d[idx]
+        # else:
+        #     d_sample = d
+        # r = torch.quantile(d_sample, scene_cutting_threshold / 100)
+        r = 1.25
         mask = d <= r
     
     normalized_extrinsics[:, :3, 3] /= avg_scale
@@ -66,7 +67,7 @@ def out_to_trajectory(out, scale, e0, device=None):
         out = out[:, :, :9]
     matrix_trajectory = torch.eye(4, device=device)[None].repeat(out.shape[1], 1, 1)[None].repeat(out.shape[0], 1, 1, 1)
 
-    raw_trans = out[:, :, 6:] * scale
+    raw_trans = out[:, :, 6:] * scale.unsqueeze(-1)
     matrix_trajectory[:, :, :3, 3] = raw_trans
 
     rot6d = out[:, :, :6]
@@ -108,3 +109,16 @@ def make_intrinsics(fx_fy, width, height):
     K[..., 2, 2] = 1.0
 
     return K
+
+def inverse_camera_matrix(camera_matrix):
+    """
+    camera_matrix: (..., 4, 4)
+
+    inversed_camera_matrix: (..., 4, 4)
+    """
+    inversed_camera_matrix = torch.zeros_like(camera_matrix).to(camera_matrix)
+    inversed_camera_matrix[..., :3, :3] = camera_matrix[..., :3, :3].transpose(-1, -2)
+    inversed_camera_matrix[..., :3, 3:] = -camera_matrix[..., :3, :3].transpose(-1, -2) @ camera_matrix[..., :3, 3:]
+    inversed_camera_matrix[..., 3, 3] = 1.0
+    
+    return inversed_camera_matrix

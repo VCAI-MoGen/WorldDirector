@@ -79,7 +79,7 @@ clip = CLIPScore(model_name_or_path="openai/clip-vit-base-patch16").to(device)
 langsam = LangSAM(sam_type="sam2.1_hiera_large")
 to_pil = T.ToPILImage()
 
-def predict_human_masks(video_tensor, batch_size=41):
+def predict_masks(video_tensor, batch_size=41, text='human. man. woman'):
     """
     video_tensor    : (N, C, H, W)
     """
@@ -91,7 +91,7 @@ def predict_human_masks(video_tensor, batch_size=41):
         start_idx = idx
         end_idx = idx + batch_size if idx + batch_size < len(video_pil) else len(video_pil)
         input_image_pil = video_pil[start_idx:end_idx]
-        results = langsam.predict(input_image_pil, ["human. man. woman"] * len(input_image_pil))
+        results = langsam.predict(input_image_pil, [text] * len(input_image_pil))
         
         for result in results:
             mask = torch.zeros((H, W, 1)).bool()
@@ -130,7 +130,7 @@ with torch.no_grad():
         B = generated_video.shape[0]
 
         # Scene Consistency between pred and target
-        generated_video_human_masks = predict_human_masks(generated_video_norm)
+        generated_video_human_masks = predict_masks(generated_video_norm)
         generated_video_masked = generated_video_norm * (1 - generated_video_human_masks) + generated_video_human_masks
         scene_render_video_masked = scene_render_video_norm * (1 - generated_video_human_masks) + generated_video_human_masks
 
@@ -189,4 +189,4 @@ json_path = os.path.join(result_dir, json_name)
 with open(json_path, 'w') as f:
     json.dump(eval_results, f, indent=2, ensure_ascii=False)
 
-# vbench evaluate --dimension "overall_consistency motion_smoothness dynamic_degree imaging_quality aesthetic_quality" --videos_path /home/ckd248/data/SCVideo/evaluation/data/generated_video --mode=custom_input
+# vbench evaluate --dimension "overall_consistency subject_consistency background_consistency temporal_flickering motion_smoothness imaging_quality aesthetic_quality" --videos_path /home/ckd248/data/SCVideo/evaluation/data/generated_video --mode=custom_input

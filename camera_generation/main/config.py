@@ -5,22 +5,30 @@ import torch
 
 class Config:
 
+    exp_name = 'multiple_cross_dit_same_pc_pe'
+
     # Path
     cur_dir = osp.dirname(os.path.abspath(__file__))
     root_dir = osp.join(cur_dir, '..')
     data_dir = osp.join(root_dir, 'data')
     # dataset_dir = osp.join('/data1/cympyc1785/SceneData/DL3DV/scenes/1K')
-    dataset_dir = osp.join('/data1/cympyc1785/SceneData/DL3DV/scenes/1K')
+    train_dataset_dir = osp.join('/data1/cympyc1785/SceneData/DL3DV/scenes/1K')
+    val_dataset_dir = osp.join('/data1/cympyc1785/SceneData/DL3DV/scenes/7K')
+    val_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260220_075745_mmdit_wo_pc_pos_enc/ckpts/900.pth'
+    use_concerto = True
+    random_seed = 42
 
     # Training
     lr = 1e-4
-    batch_size = 64
+    batch_size = 32
     accum_steps = 1
     epochs = 50000
-    save_epoch = 10
-    load_points = False
+    save_epoch = 50
+    load_points = True
+    load_saved_pc_embeds = True
 
     # Diffusion
+    model_type = 'baseline' # ['baseline', 'director', 'baseline_mmdit]
     sampling_type = 'ddim'
     diffusion_max_step = 1000
     diffusion_inference_step = 50
@@ -48,6 +56,13 @@ class Config:
     t5_checkpoint_dir = '/home/ckd248/data/SCVideo/camera_generation/tools/Wan2.2-TI2V-5B'
     t5_checkpoint_path = 'models_t5_umt5-xxl-enc-bf16.pth'
     t5_tokenizer_path = 'google/umt5-xxl'
+
+    clip_version = 'ViT-B/32'
+    clip_max_length = 77
+
+    # clatr_ckpt_path = 'CLaTr_checkpoints/epoch99_directorial.ckpt'
+    clatr_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/main/evaluate/CLaTr/CLaTr_checkpoints/epoch109_dl3dv_seg_2.ckpt'
+    # clatr_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/main/evaluate/CLaTr/CLaTr_checkpoints/epoch89_dl3dv_seg_kl_1e-8.ckpt'
 
 cfg = Config()
 cfg_dict = {

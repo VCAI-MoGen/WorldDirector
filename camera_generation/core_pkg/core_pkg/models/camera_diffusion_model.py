@@ -43,8 +43,8 @@ class CrossAttention(nn.Module):
         self.norm = nn.LayerNorm(dim)
         self.attn_weight = None
 
-    def forward(self, x, context, key_padding_mask=None):
-        a, attn_weight = self.attn(x, context, context, key_padding_mask=key_padding_mask)
+    def forward(self, x, context, attn_mask=None, key_padding_mask=None):
+        a, attn_weight = self.attn(x, context, context, attn_mask=attn_mask, key_padding_mask=key_padding_mask)
         if self.training is False:
             self.attn_weight = attn_weight
         return self.norm(x + a)
@@ -57,13 +57,16 @@ class CameraDiffusionModel(nn.Module):
         time_emb_dim=512,
         hidden_dim=512,
         num_layers=4,
+        cross_layers=4,
         num_heads=8,
-        point_dim=768,
+        point_dim=1280,
         text_dim=4096,
+        pc_encoder=None,
     ):
         super().__init__()
 
         self.num_layers = num_layers
+        self.num_heads = num_heads
 
         self.cam_in = nn.Linear(cam_dim, hidden_dim)
 
@@ -72,6 +75,10 @@ class CameraDiffusionModel(nn.Module):
 
         self.text_proj = nn.Linear(text_dim, hidden_dim)
         self.point_proj = nn.Linear(point_dim, hidden_dim)
+        self.mm_cross = nn.ModuleList([
+            CrossAttention(hidden_dim, num_heads)
+            for _ in range(cross_layers)
+        ])
 
         self.layers = nn.ModuleList([
             nn.ModuleList([
@@ -81,14 +88,21 @@ class CameraDiffusionModel(nn.Module):
                     batch_first=True
                 ),
                 CrossAttention(hidden_dim, num_heads),
+                CrossAttention(hidden_dim, num_heads),
+                nn.Linear(hidden_dim, hidden_dim),
             ])
             for _ in range(num_layers)
         ])
 
         self.out = nn.Linear(hidden_dim, cam_dim)
-        self.cross_attn_weight = None
+        self.text_cross_attn_weight = None
+        self.point_cross_attn_weight = None
+        self.mm_cross_attn_weight = None
+
+        self.pc_encoder = pc_encoder
 
     def forward(self, x_t, t, text_emb, text_mask, point_emb=None, point_mask=None):
+        has_point = point_emb is not None and point_mask is not None
         B, T, _ = x_t.shape
 
         h = self.cam_in(x_t)
@@ -101,29 +115,53 @@ class CameraDiffusionModel(nn.Module):
         t_embed = t_embed.unsqueeze(1).repeat(1, T, 1)
 
         h = h + t_embed
+
+        sa_masks = torch.ones(h.shape[:2]).to(h).bool()
         
         text_tok = self.text_proj(text_emb)
-        if point_emb is not None and point_mask is not None:
-            point_tok = self.point_proj(point_emb)
-            context = torch.cat([text_tok, point_tok], dim=1)
-            mask = torch.cat([text_mask, point_mask], dim=1)
-        else:
-            context = text_tok
-            mask = text_mask
-        context_pos_emb = positional_encoding(context.shape[-2], context.shape[-1], device=context.device).unsqueeze(0).expand(B, -1, -1)
-        context += context_pos_emb
-        
-        for self_attn, cross_attn in self.layers:
-            h = self_attn(h)
-            h = cross_attn(h, context, key_padding_mask=~mask) + h
-            if self.training is False:
-                if self.cross_attn_weight is None:
-                    self.cross_attn_weight = cross_attn.attn_weight
-                else:
-                    self.cross_attn_weight += cross_attn.attn_weight
-        if self.training is False:
-            self.cross_attn_weight /= self.num_layers
+        context = text_tok
+        context_mask = text_mask
+        # context_pos_emb = positional_encoding(context.shape[-2], context.shape[-1], device=context.device).unsqueeze(0).expand(B, -1, -1)
+        # context += context_pos_emb
 
+        if has_point:
+            point_tok = self.point_proj(point_emb)
+            # point_pos_emb = positional_encoding(point_tok.shape[-2], point_tok.shape[-1], device=point_tok.device).unsqueeze(0).expand(B, -1, -1)
+            # point_tok += point_pos_emb
+            # L, S = point_mask.shape[1], text_mask.shape[1]
+            # point_tok = self.mm_cross(point_tok, context, key_padding_mask=~context_mask) + point_tok
+            point_tok = point_tok * point_mask.unsqueeze(-1)
+            for ca in self.mm_cross:
+                point_tok = ca(point_tok, context, key_padding_mask=~context_mask) + point_tok
+            context = torch.cat([context, point_tok], dim=1)
+            context_mask = torch.cat([context_mask, point_mask], dim=1)
+            context_pos_emb = positional_encoding(text_tok.shape[-2] + 1, text_tok.shape[-1], device=context.device).unsqueeze(0).expand(B, -1, -1)
+            context_pos_emb = torch.cat([context_pos_emb, context_pos_emb[:, -1:, :].repeat(1, point_tok.shape[1] - 1, 1)], dim=1)
+            context += context_pos_emb
+
+            # h = torch.cat([h, point_tok], dim=1)
+            # sa_masks = torch.cat([sa_masks, point_mask], dim=1)
+            
+        
+        for self_attn, text_cross_attn, point_cross_attn, mlp in self.layers:
+            h = self_attn(h)
+            h = text_cross_attn(h, context, key_padding_mask=~context_mask) + h
+            # if has_point:
+            #     h = point_cross_attn(h, point_tok, key_padding_mask=~point_mask) + h
+            h = mlp(h) + h
+        #     if self.training is False:
+        #         if self.text_cross_attn_weight is None:
+        #             self.text_cross_attn_weight = text_cross_attn.attn_weight
+        #             self.point_cross_attn_weight = point_cross_attn.attn_weight
+        #         else:
+        #             self.text_cross_attn_weight += text_cross_attn.attn_weight
+        #             self.point_cross_attn_weight += point_cross_attn.attn_weight
+        # if self.training is False:
+        #     self.mm_cross_attn_weight = self.mm_cross.attn_weight
+        #     self.text_cross_attn_weight /= self.num_layers
+        #     self.point_cross_attn_weight /= self.num_layers
+
+        h = h[:, :T, :]
         return self.out(h)   # (B, T, 9)
     
 def get_model():

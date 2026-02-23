@@ -296,6 +296,7 @@ class CrossAttentionOp(nn.Module):
             self.q = nn.Linear(dim_q, attention_dim, bias=use_biases)
             self.kv = nn.Linear(dim_kv, attention_dim * 2, bias=use_biases)
         self.out = nn.Linear(attention_dim, dim_q, bias=use_biases)
+        self.attn_weight = None
 
     def forward(self, x_to, x_from=None, attention_mask=None, key_padding_mask=None):
         if x_from is None:
@@ -314,6 +315,13 @@ class CrossAttentionOp(nn.Module):
             attention_mask = (~key_padding_mask.bool())[:, None, None, :]
             attention_mask = attention_mask.expand(-1, q.size(1), q.size(2), -1)
 
+        if self.training is False:
+            attn_logits = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(q.size(-1))
+            if attention_mask is not None:
+                attn_logits = attn_logits.masked_fill(attention_mask == False, float("-inf"))
+            attn_weights = F.softmax(attn_logits, dim=-1).mean(dim=1)
+            self.attn_weight = attn_weights
+        
         x = torch.nn.functional.scaled_dot_product_attention(
             q, k, v, attn_mask=attention_mask
         )
@@ -408,7 +416,7 @@ class CameraDiffusionModel(nn.Module):
         num_layers=4,
         mlp_multiplier=4,
         num_heads=8,
-        point_dim=768,
+        point_dim=1280,
         text_dim=4096,
         dropout=0.1,
         stochastic_depth=0.1,
@@ -461,6 +469,10 @@ class CameraDiffusionModel(nn.Module):
         self.out_norm = layer_norm(hidden_dim, eps=1e-6)
         self.out = nn.Linear(hidden_dim, cam_dim)
 
+        self.text_cross_attn_weight = None
+        self.point_cross_attn_weight = None
+        self.mm_cross_attn_weight = None
+
     def forward(self, x_t, t, text_emb, text_mask, point_emb=None, point_mask=None):
         B = x_t.shape[0]
         h = self.cam_in(x_t)
@@ -479,10 +491,30 @@ class CameraDiffusionModel(nn.Module):
         
         for block in self.cond_sa:
             context = block(context, token_mask=context_mask)
+
+            # if self.training is False:
+            #     context_attn_weight = block.sa.attn_weight
+            #     if self.mm_cross_attn_weight is None:
+            #         self.mm_cross_attn_weight = block.sa.attn_weight[:, 1+text_tok.shape[1]:, 1:text_tok.shape[1] + 1]
+            #     else:
+            #         self.mm_cross_attn_weight += block.sa.attn_weight[:, 1+text_tok.shape[1]:, 1:text_tok.shape[1] + 1]
+
         for block in self.backbone_module:
             h = block(h, context, cond_mask=context_mask)
-        
+            # if self.training is False:
+            #     context_attn_weight = block.ca.attn_weight
+            #     if self.text_cross_attn_weight is None:
+            #         self.text_cross_attn_weight = context_attn_weight[:, :, 1:text_tok.shape[1] + 1]
+            #         self.point_cross_attn_weight = context_attn_weight[:, :, text_tok.shape[1] + 1:]
+            #     else:
+            #         self.text_cross_attn_weight += context_attn_weight[:, :, 1:text_tok.shape[1] + 1]
+            #         self.point_cross_attn_weight += context_attn_weight[:, :, text_tok.shape[1] + 1:]
         h = self.out(self.out_norm(h))
+
+        # if self.training is False:
+        #     self.text_cross_attn_weight /= len(self.backbone_module)
+        #     self.point_cross_attn_weight /= len(self.backbone_module)
+        #     self.mm_cross_attn_weight /= len(self.cond_sa)
 
         return h # (B, T, cam_dim)
     
