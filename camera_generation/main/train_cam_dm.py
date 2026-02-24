@@ -2,14 +2,13 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import os
-from tqdm import tqdm
 import wandb
 import datetime
 import time
 import json
 from pathlib import Path
-from accelerate import Accelerator
-from accelerate.utils import gather_object
+from accelerate import Accelerator, DistributedDataParallelKwargs
+from accelerate.utils import gather_object, tqdm, broadcast_object_list
 
 from config import cfg, cfg_dict
 from core_pkg.common.base import Trainer
@@ -56,9 +55,14 @@ def sample(model, scheduler, traj_len, text_emb, text_masks, point_emb, point_ma
 def train():
     T = cfg.diffusion_max_step 
     traj_len = (cfg.num_frames - 1) // 4 + 1
-    device = 'cuda:0'
-    accelerator = Accelerator(log_with="wandb")
-    exp_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + f'_{cfg.exp_name}'
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(log_with="wandb", kwargs_handlers=[ddp_kwargs])
+    device = accelerator.device
+    if accelerator.is_main_process:
+        exp_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    else:
+        exp_name = None
+    exp_name = broadcast_object_list([exp_name])[0]
     result_dir = os.path.abspath(os.path.join('../results', exp_name))
     os.makedirs(result_dir, exist_ok=True)
     ckpt_dir = os.path.join(result_dir, 'ckpts')
@@ -117,7 +121,6 @@ def train():
     else:
         model = CameraDiffusionModel(pc_encoder=pc_encoder)
     
-    model = model.to(device)
     model.train()
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
 
@@ -130,8 +133,8 @@ def train():
 
     global_step = 0
 
-    model, camera_vae, pc_encoder, clip_model, opt, train_dataloader, valid_dataloader = accelerator.prepare(
-        model, camera_vae, pc_encoder, clip_model, opt, trainer.batch_generator, trainer.valid_batch_generator
+    model, opt, train_dataloader, valid_dataloader = accelerator.prepare(
+        model, opt, trainer.batch_generator, trainer.valid_batch_generator
     )
     for epoch in range(cfg.epochs):
         pbar = tqdm(train_dataloader)
@@ -343,16 +346,17 @@ def train():
                     metric_json_path = os.path.join(result_dir, 'metrics.json')
                     with open(metric_json_path, 'r') as f:
                         metrics = json.load(f)
-                    
-                    total_loss_latent = accelerator.reduce(total_loss_latent, reduction='sum')
-                    total_loss_traj = accelerator.reduce(total_loss_traj, reduction='sum')
-                    total_samples = accelerator.reduce(total_samples, reduction='sum')
-                    accelerator.log(
-                        {"val/loss_latent": total_loss_latent / total_samples, 
-                        "val/loss_traj": total_loss_traj / total_samples},
-                        step=global_step,
-                    )
                     accelerator.log(metrics, step=global_step,)
+
+                total_loss_latent = accelerator.reduce(total_loss_latent, reduction='sum')
+                total_loss_traj = accelerator.reduce(total_loss_traj, reduction='sum')
+                total_samples = accelerator.reduce(total_samples, reduction='sum')
+                accelerator.log(
+                    {"val/loss_latent": total_loss_latent / total_samples, 
+                    "val/loss_traj": total_loss_traj / total_samples},
+                    step=global_step,
+                )
+                
             if accelerator.is_main_process:
                 unwrapped_model = accelerator.unwrap_model(model)
                 torch.save(unwrapped_model.state_dict(), os.path.join(ckpt_dir, f"{epoch}.pth"))

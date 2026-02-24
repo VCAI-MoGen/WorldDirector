@@ -2,15 +2,13 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import os
-from tqdm import tqdm
-import wandb
 import datetime
 
 from config import cfg, cfg_dict
 from core_pkg.common.base import Trainer
-from core_pkg.common.utils.rotation_utils import compute_rotation_matrix_from_ortho6d
 from core_pkg.models.vae_intr import CameraVAE
-from torch.utils.data import DataLoader
+from accelerate import Accelerator
+from accelerate.utils import tqdm, broadcast_object_list
 
 def camera_vae_loss(x, x_hat, mu, logvar, beta=cfg.vae_beta):
     """
@@ -26,65 +24,105 @@ def camera_vae_loss(x, x_hat, mu, logvar, beta=cfg.vae_beta):
 
 def train():
     # hyperparams
-    device = 'cuda:0'
-    exp_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    accelerator = Accelerator(log_with="wandb")
+    device = accelerator.device
+    if accelerator.is_main_process:
+        exp_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    else:
+        exp_name = None
+    exp_name = broadcast_object_list([exp_name])[0]
     result_dir = os.path.join('../results_vae', exp_name)
     os.makedirs(result_dir, exist_ok=True)
     ckpt_dir = os.path.join(result_dir, 'ckpts')
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    wandb.init(project="my-vae-training", name=f"exp_{exp_name}", config=cfg_dict)
+    accelerator.init_trackers(
+        project_name="my-vae-training", 
+        config=cfg_dict,
+        init_kwargs={
+            "wandb": {
+                "name": f"{exp_name}"
+            }
+        }
+    )
 
     trainer = Trainer(cfg=cfg)
     trainer._make_batch_generator()
     trainer._make_model()
 
     # model
-    model = CameraVAE().to(device)
+    model = CameraVAE()
     model.train()
+    model = model.to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
+    train_dataloader = trainer.batch_generator
+    model, opt, train_dataloader= accelerator.prepare(
+        model, opt, trainer.batch_generator
+    )
 
-    for epoch in range(wandb.config.epochs):
-        pbar = tqdm(trainer.batch_generator)
+    global_step = 0
+    for epoch in range(cfg.epochs):
+        pbar = tqdm(train_dataloader)
         loss_info = {
             "loss": [],
             "recon_loss": [],
             "kl_loss": [],
         }
+        total_loss = torch.tensor(0.0, device=device)
+        total_recon_loss = torch.tensor(0.0, device=device)
+        total_kl_loss = torch.tensor(0.0, device=device)
+        total_samples = torch.tensor(0, device=device)
         for data in pbar:
             data_name = data['data_name']
             traj = data['cam_param'].to(device)
+            B = traj.shape[0]
             traj_pred, mu, logvar = model(traj)
             loss, recon_loss, kl_loss = camera_vae_loss(traj, traj_pred, mu, logvar)
 
             opt.zero_grad()
-            loss.backward()
+            accelerator.backward(loss)
             opt.step()
+            global_step += 1
 
-            wandb.log({
+            accelerator.log({
                 "train/loss_iter": loss.item(),
                 "train/recon_loss_iter": recon_loss.item(),
                 "train/kl_loss_iter": kl_loss.item()
-            })
+            }, step=global_step)
 
-            loss_info["loss"].append(loss.item())
-            loss_info["recon_loss"].append(recon_loss.item())
-            loss_info["kl_loss"].append(kl_loss.item())
+            total_loss += loss.detach() * B
+            total_recon_loss += recon_loss.detach() * B
+            total_kl_loss += kl_loss.detach() * B
+            total_samples += B
 
             pbar.set_description(f"Epoch {epoch} Loss: {loss.item():.4f}")
+        total_loss = accelerator.reduce(total_loss, reduction='sum')
+        total_recon_loss = accelerator.reduce(total_recon_loss, reduction='sum')
+        total_kl_loss = accelerator.reduce(total_kl_loss, reduction='sum')
+        total_samples = accelerator.reduce(total_samples, reduction='sum')
 
-        wandb.log({'train/' + k: sum(v) / len(v) for k, v in loss_info.items()})
+        accelerator.log(
+            {"train/epoch_loss": total_loss / total_samples},
+            step=global_step
+        )
+        accelerator.log(
+            {"train/epoch_recon_loss": total_recon_loss / total_samples},
+            step=global_step
+        )
+        accelerator.log(
+            {"train/epoch_kl_loss": total_kl_loss / total_samples},
+            step=global_step
+        )
+        accelerator.log(
+            {"train/epoch": epoch + 1},
+            step=global_step
+        )
 
         # sampling each epoch
         if epoch % cfg.save_epoch == 0:
-            with torch.no_grad():
-                z = model.encode(traj)
-                out = model.decode(z)
-                _, recon_loss_val, _ = camera_vae_loss(traj, out, mu, logvar)
-            wandb.log({
-                "val/recon_loss": recon_loss_val.item(),
-            })
-            torch.save(model.state_dict(), os.path.join(ckpt_dir, f"{epoch}.pth"))
+            if accelerator.is_main_process:
+                unwrapped_model = accelerator.unwrap_model(model)
+                torch.save(unwrapped_model.state_dict(), os.path.join(ckpt_dir, f"{epoch}.pth"))
             
     print("Training done.")
 

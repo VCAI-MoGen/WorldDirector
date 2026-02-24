@@ -105,9 +105,11 @@ class CameraDiffusionModel(nn.Module):
         has_point = point_emb is not None and point_mask is not None
         B, T, _ = x_t.shape
 
+        device = x_t.device
+
         h = self.cam_in(x_t)
 
-        pos_emb = positional_encoding(T, h.shape[-1], device=h.device).unsqueeze(0).expand(B, -1, -1)
+        pos_emb = positional_encoding(T, h.shape[-1], device=device).unsqueeze(0).expand(B, -1, -1)
         h = h + pos_emb
 
         t_embed = self.time_mlp(t)
@@ -115,8 +117,6 @@ class CameraDiffusionModel(nn.Module):
         t_embed = t_embed.unsqueeze(1).repeat(1, T, 1)
 
         h = h + t_embed
-
-        sa_masks = torch.ones(h.shape[:2]).to(h).bool()
         
         text_tok = self.text_proj(text_emb)
         context = text_tok
@@ -135,7 +135,7 @@ class CameraDiffusionModel(nn.Module):
                 point_tok = ca(point_tok, context, key_padding_mask=~context_mask) + point_tok
             context = torch.cat([context, point_tok], dim=1)
             context_mask = torch.cat([context_mask, point_mask], dim=1)
-            context_pos_emb = positional_encoding(text_tok.shape[-2] + 1, text_tok.shape[-1], device=context.device).unsqueeze(0).expand(B, -1, -1)
+            context_pos_emb = positional_encoding(text_tok.shape[-2] + 1, text_tok.shape[-1], device=device).unsqueeze(0).expand(B, -1, -1)
             context_pos_emb = torch.cat([context_pos_emb, context_pos_emb[:, -1:, :].repeat(1, point_tok.shape[1] - 1, 1)], dim=1)
             context += context_pos_emb
 
