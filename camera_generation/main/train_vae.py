@@ -4,7 +4,7 @@ import numpy as np
 import os
 import datetime
 
-from config import cfg, cfg_dict
+from config_large import cfg, cfg_dict
 from core_pkg.common.base import Trainer
 from core_pkg.models.vae_intr import CameraVAE
 from accelerate import Accelerator
@@ -47,16 +47,16 @@ def train():
     )
 
     trainer = Trainer(cfg=cfg)
-    trainer._make_batch_generator()
     trainer._make_model()
+    trainer._make_batch_generator(include_val=False)
 
     # model
     model = CameraVAE()
     model.train()
     model = model.to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
-    train_dataloader = trainer.batch_generator
-    model, opt, train_dataloader= accelerator.prepare(
+    
+    model, opt, train_dataloader = accelerator.prepare(
         model, opt, trainer.batch_generator
     )
 

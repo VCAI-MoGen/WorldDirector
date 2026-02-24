@@ -11,7 +11,7 @@ import torchvision.transforms as transforms
 from torch.nn.parallel.data_parallel import DataParallel
 from torch.utils.data.dataloader import default_collate
 from core_pkg.models.camera_diffusion_model import get_model
-from dataset import CamDataset
+from dataset_large import CamDataset
 
 class Base(object):
     __metaclass__ = abc.ABCMeta
@@ -44,7 +44,7 @@ class Trainer(Base):
             cur_lr = g['lr']
         return cur_lr
 
-    def _make_batch_generator(self):
+    def _make_batch_generator(self, include_val=True):
         # data load and construct batch generator
         self.trainset_loader = CamDataset(cfg=self.cfg)
         self.itr_per_epoch = math.ceil(len(self.trainset_loader) / self.cfg.num_gpus / self.cfg.batch_size)
@@ -52,11 +52,12 @@ class Trainer(Base):
                                           batch_size=self.cfg.num_gpus*self.cfg.batch_size, \
                                             shuffle=True, num_workers=self.cfg.num_thread, \
                                             persistent_workers=True, collate_fn=collate_fn)
-        self.validset_loader = CamDataset(cfg=self.cfg, type='val')
-        self.valid_batch_generator = DataLoader(dataset=self.validset_loader, \
-                                          batch_size=self.cfg.num_gpus*self.cfg.batch_size, \
-                                            shuffle=False, num_workers=self.cfg.num_thread, \
-                                            persistent_workers=True, collate_fn=collate_fn)
+        if include_val:
+            self.validset_loader = CamDataset(cfg=self.cfg, type='val')
+            self.valid_batch_generator = DataLoader(dataset=self.validset_loader, \
+                                            batch_size=self.cfg.num_gpus*self.cfg.batch_size, \
+                                                shuffle=False, num_workers=self.cfg.num_thread, \
+                                                persistent_workers=True, collate_fn=collate_fn)
 
     def _make_model(self):
         model = get_model()
@@ -116,7 +117,7 @@ def collate_fn(batch):
                     masks.append(mask)
 
                 new_batch["pc_embeds"] = torch.stack(padded_embeds, dim=0)  # (B, max_len, D)
-                new_batch["pc_masks"] = torch.stack(masks, dim=0) .bool()      # (B, max_len)
+                new_batch["pc_masks"] = torch.stack(masks, dim=0).bool()      # (B, max_len)
 
             elif key == "pc":
                 new_batch[key] = point_collate_fn([d[key] for d in batch])
