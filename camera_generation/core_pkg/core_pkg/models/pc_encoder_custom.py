@@ -11,7 +11,6 @@ from timm.layers import DropPath
 import time
 
 import numpy as np
-# from camera_diffusion_model_mmdit import PositionalEncoding
 
 class MLPBlock(PointModule):
     def __init__(
@@ -175,7 +174,7 @@ class PCEncoder(PointModule):
         lengths = torch.tensor([x.shape[0] for x in pc_embed_list])
         masks = torch.arange(pc_embeds.shape[1])[None, :] < lengths[:, None]
         masks = masks.to(pc_embeds).bool()
-        return pc_embeds, masks, point # (B, M, 768), (B, M), List of Point
+        return pc_embeds, masks, point # (B, M, 768), (B, M), Point
 
     # def decode_with_embedding(self, cam_latents, pc_embeds, pc_masks):
     #     """

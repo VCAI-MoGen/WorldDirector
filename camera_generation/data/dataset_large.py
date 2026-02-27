@@ -107,6 +107,8 @@ class CamDataset(torch.utils.data.Dataset):
                 
                 if extrinsics.shape[0] < self.cfg.num_frames:
                     continue
+                if torch.isnan(extrinsics).any() or torch.isnan(intrinsics).any():
+                    print(data_name)
 
                 scene_path = osp.join(data_path, 'scene.pt')
                 if os.path.exists(scene_path) is False:
@@ -182,7 +184,12 @@ class CamDataset(torch.utils.data.Dataset):
                 scene_data = torch.load(scene_path) # (N, 6), coordinates (3) + color (3, range:0~1), 
             elif scene_path.endswith(".ply"):
                 scene_data = torch.tensor(load_ply_as_pointcloud(scene_path))
+            scene_data[:, 3:] *= 255.0
             normalized_extrinsics, normalized_scene_pc, avg_scale, mask = normalize_camera_extrinsics_and_points(extrinsics, scene_data[:, :3])
+            avg_scale_dir = os.path.join(os.path.dirname(scene_path), 'avg_scale')
+            os.makedirs(avg_scale_dir, exist_ok=True)
+            with open(os.path.join(avg_scale_dir, f'{data_name.split('_')[-1]}.json'), 'w') as f:
+                json.dump(avg_scale[0].item(), f)
 
             pc_embeds_path = os.path.join(os.path.dirname(scene_path), 'pc_embeds_decoded.pt')
             if self.cfg.load_saved_pc_embeds and os.path.exists(pc_embeds_path):
@@ -210,8 +217,8 @@ class CamDataset(torch.utils.data.Dataset):
                 }
                 point_obj = self.pc_transform(point_obj)
         else:
-            saved_avg_scale_path = os.path.join(os.path.dirname(scene_path), "point_avg_scale.json")
-            saved_avg_scale = json.load(open(saved_avg_scale_path, "r"))
+            saved_avg_scale_path = os.path.join(os.path.dirname(scene_path), "avg_scale", f"{data_name.split('_')[-1]}.json")
+            saved_avg_scale = torch.tensor([json.load(open(saved_avg_scale_path, "r"))])
             normalized_extrinsics, _, avg_scale, mask = normalize_camera_extrinsics_and_points(extrinsics, avg_scale=saved_avg_scale)
 
         fx = intrinsics[:, 0, 0]
@@ -234,9 +241,13 @@ class CamDataset(torch.utils.data.Dataset):
             'avg_scale': avg_scale,
             'text_prompt': text_prompt
         }
-        if scene_data is not None:
-            data['pc'] = point_obj
-        if scene_embeds is not None:
-            data['pc_embeds'] = scene_embeds
+        # if torch.isnan(cam_param).any() or torch.isnan(avg_scale).any():
+        #     print(data_name)
+        #     input()
+        # if scene_data is not None:
+        #     data['pc'] = point_obj
+        # if scene_embeds is not None:
+        #     data['pc_embeds'] = scene_embeds
         
         return data
+    

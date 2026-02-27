@@ -6,9 +6,12 @@ import datetime
 
 from config_large import cfg, cfg_dict
 from core_pkg.common.base import Trainer
-from core_pkg.models.vae_intr import CameraVAE
+from core_pkg.models.vae_intr_large import CameraVAE
 from accelerate import Accelerator
 from accelerate.utils import tqdm, broadcast_object_list
+from transformers import get_cosine_schedule_with_warmup
+
+torch.autograd.set_detect_anomaly(True)
 
 def camera_vae_loss(x, x_hat, mu, logvar, beta=cfg.vae_beta):
     """
@@ -24,7 +27,7 @@ def camera_vae_loss(x, x_hat, mu, logvar, beta=cfg.vae_beta):
 
 def train():
     # hyperparams
-    accelerator = Accelerator(log_with="wandb")
+    accelerator = Accelerator(log_with="wandb", mixed_precision="bf16")
     device = accelerator.device
     if accelerator.is_main_process:
         exp_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -55,9 +58,17 @@ def train():
     model.train()
     model = model.to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
-    
-    model, opt, train_dataloader = accelerator.prepare(
-        model, opt, trainer.batch_generator
+
+    train_dataloader = trainer.batch_generator
+    total_training_steps = len(train_dataloader) * cfg.epochs
+    warmup_steps = int(0.1 * total_training_steps)
+    scheduler = get_cosine_schedule_with_warmup(
+        opt,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_training_steps,
+    )
+    model, opt, train_dataloader, scheduler = accelerator.prepare(
+        model, opt, trainer.batch_generator, scheduler
     )
 
     global_step = 0
@@ -79,9 +90,13 @@ def train():
             traj_pred, mu, logvar = model(traj)
             loss, recon_loss, kl_loss = camera_vae_loss(traj, traj_pred, mu, logvar)
 
-            opt.zero_grad()
+            
             accelerator.backward(loss)
+            accelerator.clip_grad_norm_(model.parameters(), 0.5)
             opt.step()
+            scheduler.step()
+            opt.zero_grad()
+            
             global_step += 1
 
             accelerator.log({

@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import random
 
-from config import cfg, cfg_dict
+from config_large import cfg, cfg_dict
 from core_pkg.common.base import Trainer
 from core_pkg.models.pc_encoder import PCEncoder
 from core_pkg.models.vae_intr import CameraVAE
@@ -34,7 +34,8 @@ def train():
                             shuffle=False, num_workers=cfg.num_thread, \
                             persistent_workers=True)
     print("Total data cnt: ", trainset_loader.__len__())
-    result_dir = '/home/ckd248/data/SCVideo/camera_generation/dataset/clatr'
+    result_dir = '/home/ckd248/data/SCVideo/camera_generation/dataset/clatr_large'
+    os.makedirs(result_dir, exist_ok=True)
     train_data_dir = os.path.join(result_dir, 'train')
     os.makedirs(train_data_dir, exist_ok=True)
     test_data_dir = os.path.join(result_dir, 'test')
@@ -45,7 +46,7 @@ def train():
     for epoch in range(1):
         pbar = tqdm(batch_generator)
         for step, data in enumerate(pbar):
-            if random.random() < 0.9:
+            if random.random() < 0.95:
                 data_dir = train_data_dir
             else:
                 data_dir = test_data_dir

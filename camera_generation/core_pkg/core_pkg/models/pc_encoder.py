@@ -34,7 +34,6 @@ class PCEncoder(nn.Module):
         ]
         self.pc_transform = concerto.transform.Compose(config)
         self.model = concerto.model.load("concerto_large_outdoor", repo_id="Pointcept/Concerto").cuda()
-        # self.model = concerto.model.load("concerto_large", repo_id="Pointcept/Concerto").cuda()
         self.point = None
 
     def decode(self, point:Point, recover_origin_scale=False, num_iter=2):

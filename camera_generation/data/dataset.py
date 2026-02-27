@@ -34,7 +34,7 @@ class CamDataset(torch.utils.data.Dataset):
         if self.type == 'val':
             self.dataset_path = self.cfg.val_dataset_dir
 
-        if self.cfg.use_concerto:
+        if self.cfg.point_encoder == 'concerto':
             pc_transform_config = [
                 dict(type="CenterShift", apply_z=True),
                 dict(type="Update", keys_dict={"index_valid_keys": ["coord", "color", "normal"]}),
@@ -54,7 +54,7 @@ class CamDataset(torch.utils.data.Dataset):
                     feat_keys=("coord", "color", "normal"),
                 ),
             ]
-        else:
+        elif self.cfg.point_encoder == 'custom':
             pc_transform_config = [
                 dict(type="Update", keys_dict={"index_valid_keys": ["coord", "color"]}),
                 dict(
@@ -71,6 +71,45 @@ class CamDataset(torch.utils.data.Dataset):
                     type="Collect",
                     keys=("coord", "grid_coord", "color", "inverse", "offset"),
                     feat_keys=("coord", "color"),
+                ),
+            ]
+        elif self.cfg.point_encoder == 'mosaic':
+            pc_transform_config = [
+                dict(
+                    type="Copy",
+                    keys_dict={"coord": "origin_coord"},
+                ),
+                # dict(
+                #     type="GridSample",
+                #     grid_size=0.02,
+                #     hash_type="fnv",
+                #     mode="train",
+                #     return_grid_coord=True,
+                #     return_inverse=True,
+                # ),
+                dict(
+                    type="CenterShift",
+                    apply_z=True,
+                ),
+                dict(
+                    type="NormalizeColor_mosaic3d",
+                ),
+                dict(
+                    type="ToTensor",
+                ),
+                dict(
+                    type="Collect",
+                    keys=(
+                        "origin_coord",
+                        "coord",
+                        "color",
+                        # "grid_coord",
+                    ),
+                    offset_keys_dict={
+                        "offset": "coord",
+                        "pc_count": "origin_coord",
+                    },
+                    feat_keys=("color",),
                 ),
             ]
         self.pc_transform = concerto.transform.Compose(pc_transform_config)
@@ -105,7 +144,7 @@ class CamDataset(torch.utils.data.Dataset):
             # # Experiments for linear interpolation
             # if data_name not in ['1K/006771db3c057280f9277e735be6daa24339657ce999216c38da68002a443fed', '006771db3c057280f9277e735be6daa24339657ce999216c38da68002a443fed']:
             #     continue
-            # if data_name not in ['006771db3c057280f9277e735be6daa24339657ce999216c38da68002a443fed', '00f32fbf46f60a718942a417962d42d998317725fb59248ed728ee69ac3a3e8f']:
+            # if data_name not in ['006771db3c057280f9277e735be6daa24339657ce999216c38da68002a443fed', '00534f5868a6f72e77befbdb06e35ee9dc34e175dddf0e64e8b1922e494c8e24']:
             #     continue
             
             data_path = osp.join(self.dataset_path, data_name)
@@ -174,6 +213,7 @@ class CamDataset(torch.utils.data.Dataset):
                 scene_data = None
             else:
                 scene_data[:, :3] = normalized_scene_pc
+                scene_data[:, 3:] *= 255.0
                 scene_data = scene_data[mask]
                 offset = torch.tensor([scene_data.shape[0]])
                 R_y_down_to_z_up = torch.tensor([
@@ -181,7 +221,7 @@ class CamDataset(torch.utils.data.Dataset):
                     [0,  0, -1.0],
                     [0,  1.0,  0],
                 ])
-                scene_data[:, :3]  = scene_data[:, :3] @ R_y_down_to_z_up.T
+                scene_data[:, :3]  = scene_data[:, :3] @ R_y_down_to_z_up
                 scene_data = scene_data.numpy()
                 offset = offset.numpy()
                 point_obj = {

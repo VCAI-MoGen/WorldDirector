@@ -61,8 +61,8 @@ class CameraDiffusionModel(nn.Module):
         hidden_dim=512,
         num_layers=8,
         num_heads=8,
-        point_dim=512,
-        text_dim=4096,
+        point_dim=768,
+        text_dim=768,
         dropout=0.1,
         pc_encoder=None,
     ):
@@ -79,6 +79,7 @@ class CameraDiffusionModel(nn.Module):
         self.text_proj = nn.Linear(text_dim, hidden_dim)
         self.point_proj = nn.Linear(point_dim, hidden_dim)
         self.pos_encod = PositionalEncoding(hidden_dim, dropout, batch_first=True)
+        self.cond_pos_encod = PositionalEncoding(hidden_dim, dropout, batch_first=True)
 
         self.layers = MMDiT(
             depth=self.num_layers,
@@ -103,11 +104,10 @@ class CameraDiffusionModel(nn.Module):
         t_embed = self.time_proj(t_embed)
         
         text_tok = self.text_proj(text_emb)
-        text_tok = self.pos_encod(text_tok)
+        text_tok = self.cond_pos_encod(text_tok)
 
         if has_point:
             point_tok = self.point_proj(point_emb)
-            # point_tok = self.pos_encod(point_tok)
         
         h, text_tok, point_tok = self.layers(
             modality_tokens=(h, text_tok, point_tok),

@@ -27,10 +27,12 @@ if cfg.model_type == 'director':
 if cfg.model_type == 'baseline_mmdit':
     from core_pkg.models.camera_diffusion_model_mmdit import CameraDiffusionModel
 
-if cfg.use_concerto:
+if cfg.point_encoder == 'concerto':
     from core_pkg.models.pc_encoder import PCEncoder
-else:
+if cfg.point_encoder == 'custom':
     from core_pkg.models.pc_encoder_custom import PCEncoder
+if cfg.point_encoder == 'mosaic':
+    from core_pkg.models.pc_encoder_mosaic import PCEncoder
 
 @torch.no_grad()
 def sample(model, scheduler, traj_len, text_emb, text_masks, point_emb, point_mask, from_t=None, traj_latents=None):
@@ -107,7 +109,7 @@ def train():
         tokenizer_path=os.path.join(cfg.t5_checkpoint_dir, cfg.t5_tokenizer_path),
         shard_fn=None)
     
-    if cfg.use_concerto:
+    if cfg.point_encoder != 'custom':
         model = CameraDiffusionModel()
     else:
         model = CameraDiffusionModel(pc_encoder=pc_encoder)
@@ -134,14 +136,14 @@ def train():
             width = data['width'].cuda()
             height = data['height'].cuda()
 
-            if '19758c1aa9e5b35f94a798c8941f39f4d4a46d4cf96e13734b811f99e7bf7e95' not in data_name[0]:
-                continue
+            # if '19758c1aa9e5b35f94a798c8941f39f4d4a46d4cf96e13734b811f99e7bf7e95' not in data_name[0]:
+            #     continue
             # text = ['The camera captures the basketball court.']
 
             if cfg.load_points:
                 if 'pc' in data:
                     point = data['pc']
-                    if cfg.use_concerto:
+                    if cfg.point_encoder != 'custom':
                         pc_embeds, pc_masks, point_obj = pc_encoder(point)
                     else:
                         pc_embeds, pc_masks, point_obj = model.pc_encoder(point)

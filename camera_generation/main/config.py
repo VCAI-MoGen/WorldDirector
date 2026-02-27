@@ -5,7 +5,7 @@ import torch
 
 class Config:
 
-    exp_name = 'multiple_cross_dit_same_pc_pe'
+    exp_name = 'cross_attn'
 
     # Path
     cur_dir = osp.dirname(os.path.abspath(__file__))
@@ -14,18 +14,17 @@ class Config:
     # dataset_dir = osp.join('/data1/cympyc1785/SceneData/DL3DV/scenes/1K')
     train_dataset_dir = osp.join('/data1/cympyc1785/SceneData/DL3DV/scenes/1K')
     val_dataset_dir = osp.join('/data1/cympyc1785/SceneData/DL3DV/scenes/7K')
-    val_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260220_075745_mmdit_wo_pc_pos_enc/ckpts/900.pth'
-    use_concerto = True
+    val_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260226_082914_cross_attn/ckpts/600.pth'
     random_seed = 42
 
     # Training
     lr = 1e-4
-    batch_size = 32
+    batch_size = 2
     accum_steps = 1
-    epochs = 50000
+    epochs = 2000
     save_epoch = 50
     load_points = True
-    load_saved_pc_embeds = True
+    load_saved_pc_embeds = False
 
     # Diffusion
     model_type = 'baseline' # ['baseline', 'director', 'baseline_mmdit]
@@ -51,11 +50,19 @@ class Config:
     num_thread = 8
     num_frames = 49
 
-    text_len = 512
-    t5_dtype = torch.bfloat16
-    t5_checkpoint_dir = '/home/ckd248/data/SCVideo/camera_generation/tools/Wan2.2-TI2V-5B'
-    t5_checkpoint_path = 'models_t5_umt5-xxl-enc-bf16.pth'
-    t5_tokenizer_path = 'google/umt5-xxl'
+    # Text encoder
+    text_encoder = 'T5' # ['T5', 'CLIP']
+    if text_encoder == 'T5':
+        text_len = 512
+        t5_dtype = torch.bfloat16
+        t5_checkpoint_dir = '/home/ckd248/data/SCVideo/camera_generation/tools/Wan2.2-TI2V-5B'
+        t5_checkpoint_path = 'models_t5_umt5-xxl-enc-bf16.pth'
+        t5_tokenizer_path = 'google/umt5-xxl'
+    elif text_encoder == 'CLIP':
+        clip_repo_name = 'hf-hub:UCSC-VLAA/ViT-L-16-HTxt-Recap-CLIP'
+
+    # Point encoder
+    point_encoder = 'concerto' # ['concerto', 'mosaic', 'custom']
 
     clip_version = 'ViT-B/32'
     clip_max_length = 77

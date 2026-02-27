@@ -30,10 +30,12 @@ if cfg.model_type == 'director':
 if cfg.model_type == 'baseline_mmdit':
     from core_pkg.models.camera_diffusion_model_mmdit import CameraDiffusionModel
 
-if cfg.use_concerto:
+if cfg.point_encoder == 'concerto':
     from core_pkg.models.pc_encoder import PCEncoder
-else:
+if cfg.point_encoder == 'custom':
     from core_pkg.models.pc_encoder_custom import PCEncoder
+if cfg.point_encoder == 'mosaic':
+    from core_pkg.models.pc_encoder_mosaic import PCEncoder
 
 @torch.no_grad()
 def sample(model, scheduler, traj_len, text_emb, text_masks, point_emb, point_mask):
@@ -56,10 +58,10 @@ def train():
     T = cfg.diffusion_max_step 
     traj_len = (cfg.num_frames - 1) // 4 + 1
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    accelerator = Accelerator(log_with="wandb", kwargs_handlers=[ddp_kwargs])
+    accelerator = Accelerator(log_with="wandb", mixed_precision="bf16", kwargs_handlers=[ddp_kwargs])
     device = accelerator.device
     if accelerator.is_main_process:
-        exp_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        exp_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + f'_{cfg.exp_name}'
     else:
         exp_name = None
     exp_name = broadcast_object_list([exp_name])[0]
@@ -107,16 +109,20 @@ def train():
             beta_end=cfg.beta_end,
         )    
 
-    pc_encoder = PCEncoder()
-    text_encoder = T5EncoderModel(
-        text_len=cfg.text_len,
-        dtype=cfg.t5_dtype,
-        device=device,
-        checkpoint_path=os.path.join(cfg.t5_checkpoint_dir, cfg.t5_checkpoint_path),
-        tokenizer_path=os.path.join(cfg.t5_checkpoint_dir, cfg.t5_tokenizer_path),
-        shard_fn=None)
+    pc_encoder = PCEncoder().to(device)
+    if cfg.text_encoder == 'T5':
+        text_encoder = T5EncoderModel(
+            text_len=cfg.text_len,
+            dtype=cfg.t5_dtype,
+            device=device,
+            checkpoint_path=os.path.join(cfg.t5_checkpoint_dir, cfg.t5_checkpoint_path),
+            tokenizer_path=os.path.join(cfg.t5_checkpoint_dir, cfg.t5_tokenizer_path),
+            shard_fn=None)
+    elif cfg.text_encoder == 'CLIP':
+        from core_pkg.common.utils.clip_utils import get_model, encode_text_clip
+        text_encoder, tokenizer = get_model(cfg.clip_repo_name, device=device)
     
-    if cfg.use_concerto:
+    if cfg.point_encoder != 'custom':
         model = CameraDiffusionModel()
     else:
         model = CameraDiffusionModel(pc_encoder=pc_encoder)
@@ -153,7 +159,7 @@ def train():
                 if cfg.load_points:
                     if 'pc' in data:
                         point = data['pc']
-                        if cfg.use_concerto:
+                        if cfg.point_encoder != 'custom':
                             pc_embeds, pc_masks, point_obj = pc_encoder(point)
                     elif 'pc_embeds' in data:
                         pc_embeds = data['pc_embeds'].to(device)
@@ -177,13 +183,16 @@ def train():
                     # continue
                 else:
                     pc_embeds, pc_masks = None, None
-                text_embeds, text_masks = text_encoder(text_prompt, device)
+                if cfg.text_encoder == 'T5':
+                    text_embeds, text_masks = text_encoder(text_prompt, device)
+                elif cfg.text_encoder == 'CLIP':
+                    text_embeds, text_masks = encode_text_clip(text_encoder, tokenizer, text_prompt, device=device)
                 text_embeds = text_embeds.float()
                 text_masks = text_masks.bool()
                 traj_latents = camera_vae.encode(traj) / cfg.vae_latent_scale
                 t3 = time.time()
             
-            if 'pc' in data and cfg.use_concerto is False:
+            if 'pc' in data and cfg.point_encoder == 'custom':
                 pc_embeds, pc_masks, point_obj = model.pc_encoder(point)
 
             noise = torch.randn_like(traj_latents)
@@ -250,7 +259,7 @@ def train():
                     if cfg.load_points:
                         if 'pc' in data:
                             point = data['pc']
-                            if cfg.use_concerto:
+                            if cfg.point_encoder != 'custom':
                                 pc_embeds, pc_masks, point_obj = pc_encoder(point)
                             else:
                                 pc_embeds, pc_masks, point_obj = model.pc_encoder(point)
@@ -260,7 +269,10 @@ def train():
 
                     else:
                         pc_embeds, pc_masks = None, None
-                    text_embeds, text_masks = text_encoder(text_prompt, device)
+                    if cfg.text_encoder == 'T5':
+                        text_embeds, text_masks = text_encoder(text_prompt, device)
+                    elif cfg.text_encoder == 'CLIP':
+                        text_embeds, text_masks = encode_text_clip(text_encoder, tokenizer, text_prompt, device=device)
                     text_embeds = text_embeds.float()
                     text_masks = text_masks.bool()
                     traj_latents = camera_vae.encode(traj) / cfg.vae_latent_scale
@@ -330,7 +342,7 @@ def train():
                         with open(pred_path, 'w') as f:
                             json.dump(pred_json, f, indent=4)
                     data_name_list += data_name
-                all_data_name_list = gather_object(data_name_list)
+                all_data_name_list = sorted(set(gather_object(data_name_list)))
                 if accelerator.is_main_process:
                     valid_txt_path = os.path.join(result_dir, 'test_valid.txt')
                     with open(valid_txt_path, "w", encoding="utf-8") as f:
@@ -340,9 +352,11 @@ def train():
                     out, err, ret = run_command_in_dir(['python', '-m', 'src.extraction', f'checkpoint_path={cfg.clatr_ckpt_path}', f'data_dir={result_dir}'], \
                                                     'evaluate/CLaTr')
                     print(out)
+                    print(err)
                     out, err, ret = run_command_in_dir(['python', '-m', 'src.eval_only', '--pred_path', f"{os.path.join(result_dir, 'preds.npy')}"], \
                                                     'evaluate/eval')
                     print(out)
+                    print(err)
                     metric_json_path = os.path.join(result_dir, 'metrics.json')
                     with open(metric_json_path, 'r') as f:
                         metrics = json.load(f)
@@ -351,6 +365,7 @@ def train():
                 total_loss_latent = accelerator.reduce(total_loss_latent, reduction='sum')
                 total_loss_traj = accelerator.reduce(total_loss_traj, reduction='sum')
                 total_samples = accelerator.reduce(total_samples, reduction='sum')
+                print("valid samples:", total_samples)
                 accelerator.log(
                     {"val/loss_latent": total_loss_latent / total_samples, 
                     "val/loss_traj": total_loss_traj / total_samples},

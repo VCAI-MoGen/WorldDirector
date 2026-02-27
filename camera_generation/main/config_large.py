@@ -38,12 +38,12 @@ class Config:
     random_seed = 42
 
     # Training
-    lr = 1e-3
-    batch_size = 128
+    lr = 1e-4
+    batch_size = 64
     accum_steps = 1
     epochs = 50000
     save_epoch = 50
-    load_points = True
+    load_points = False
     load_saved_pc_embeds = False
 
     # Diffusion
