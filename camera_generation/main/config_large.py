@@ -22,7 +22,7 @@ def build_dataset_dir_list():
     # datadop_dir_list = ['/home/ckd248/data/SCVideo/camera_generation/tools/GenDoP/DataDoP/ours']
     # dataset_dir_list += datadop_dir_list
 
-    # dataset_dir_list = dataset_dir_list[-1:]
+    dataset_dir_list = dataset_dir_list[0:1]
 
     return dataset_dir_list
 
@@ -44,12 +44,13 @@ class Config:
     accum_steps = 1
     epochs = 2000
     save_epoch = 50
-    sample_data = 7000
+    sample_data = 10000
     load_points = True
     load_saved_pc_embeds = False
+    attn_loss_weight = 1e-2
 
     # Diffusion
-    model_type = 'baseline' # ['baseline', 'director', 'baseline_mmdit]
+    model_type = 'baseline' # ['baseline', 'director', 'baseline_mmdit', 'baseline_attn_sup']
     sampling_type = 'ddim'
     diffusion_max_step = 1000
     diffusion_inference_step = 50

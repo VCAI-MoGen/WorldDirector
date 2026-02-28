@@ -11,6 +11,7 @@ from pathlib import Path
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from accelerate.utils import gather_object, tqdm, broadcast_object_list
 from torch_scatter import scatter_mean
+import torch.nn as nn
 
 from config_large import cfg, cfg_dict
 from core_pkg.common.base import Trainer
@@ -33,6 +34,8 @@ if cfg.model_type == 'director':
     from core_pkg.models.camera_diffusion_model_director import CameraDiffusionModel
 if cfg.model_type == 'baseline_mmdit':
     from core_pkg.models.camera_diffusion_model_mmdit import CameraDiffusionModel
+if cfg.model_type == 'baseline_attn_sup':
+    from core_pkg.models.camera_diffusion_model_attn_sup import CameraDiffusionModel
 
 if cfg.point_encoder == 'concerto':
     from core_pkg.models.pc_encoder import PCEncoder
@@ -146,6 +149,10 @@ def train():
     model, opt, train_dataloader, valid_dataloader = accelerator.prepare(
         model, opt, trainer.batch_generator, trainer.valid_batch_generator
     )
+
+    if cfg.model_type == 'baseline_attn_sup':
+        kl_loss = nn.KLDivLoss(reduction="batchmean")
+
     for epoch in range(cfg.epochs):
         pbar = tqdm(train_dataloader)
         model.train()
@@ -170,7 +177,7 @@ def train():
                     if 'pc' in data:
                         point = data['pc']
                         if cfg.point_encoder != 'custom':
-                            pc_embeds, pc_masks, point_obj = pc_encoder(point, ray_info_list)
+                            pc_embeds, ray_sims, pc_masks, point_obj = pc_encoder(point, ray_info_list)
                     elif 'pc_embeds' in data:
                         pc_embeds = data['pc_embeds'].to(device)
                         pc_masks = data['pc_masks'].to(device)
@@ -215,6 +222,30 @@ def train():
             noisy_x = noise_scheduler.add_noise(traj_latents, noise, timesteps)
             noise_pred = model(noisy_x, timesteps.float(), text_embeds, text_masks, pc_embeds, pc_masks)
             loss = F.mse_loss(noise_pred, noise)
+
+            if cfg.model_type == 'baseline_attn_sup':
+                eps = 1e-8
+                point_ca_weights = torch.stack([point_cross_attn.attn_weight for _, _, _, _, _, point_cross_attn, _ in model.layers]) # (N_layer, B, N_c, N_p)
+                _, B, N_c, N_p = point_ca_weights.shape
+                ray_sims = ray_sims.squeeze(-1)
+                target = ray_sims.masked_fill(~pc_masks, -1e9)
+                target = F.softmax(target, dim=-1) * pc_masks
+                target = target / (target.sum(dim=-1, keepdim=True) + eps) # (B, N_p)
+                target = target.unsqueeze(1).expand(B, N_c, N_p).unsqueeze(0) # (1, B, N_c, N_p)
+
+                pred = point_ca_weights * pc_masks.unsqueeze(0).unsqueeze(2)
+                pred = pred / (pred.sum(dim=-1, keepdim=True) + eps)
+                log_pred = torch.log(pred + eps)
+
+                loss_kl = F.kl_div(
+                    log_pred,
+                    target,
+                    reduction="none"
+                )  # (L,B,T,P)
+                loss_kl = loss_kl * pc_masks.unsqueeze(0).unsqueeze(2)
+                loss_kl = loss_kl.sum(dim=-1).mean()
+                loss += cfg.attn_loss_weight * loss_kl
+                
             t4 = time.time()
             accelerator.backward(loss)
             opt.step()

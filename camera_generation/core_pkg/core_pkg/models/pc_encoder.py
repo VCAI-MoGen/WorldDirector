@@ -134,7 +134,7 @@ class PCEncoder(nn.Module):
         p2v_map_list = self.get_p2v_map(point.copy())
 
         visibility_in_first_cam = [scatter_max(ray_info[1], p2v_map, dim=0)[0].unsqueeze(-1) for ray_info, p2v_map in zip(ray_info_list, p2v_map_list)]
-        # ray_sim = [scatter_mean(ray_info[0], p2v_map, dim=0) for ray_info, p2v_map in (ray_info_list, p2v_map_list)]
+        ray_sim_list = [scatter_mean(ray_info[0], p2v_map, dim=0).unsqueeze(-1) for ray_info, p2v_map in zip(ray_info_list, p2v_map_list)]
 
         # Decode
         # _, point = self.decode(point, num_iter=1)
@@ -151,9 +151,10 @@ class PCEncoder(nn.Module):
         pc_embed_list = [torch.cat([vis, pc_embed], dim=1) for vis, pc_embed in zip(visibility_in_first_cam, pc_embed_list)]
 
         pc_embeds = pad_sequence(pc_embed_list, batch_first=True)  # (B, N_max, D)
+        ray_sims = pad_sequence(ray_sim_list, batch_first=True)
 
         lengths = torch.tensor([x.shape[0] for x in pc_embed_list])
         masks = torch.arange(pc_embeds.shape[1])[None, :] < lengths[:, None]
         masks = masks.to(pc_embeds).bool()
 
-        return pc_embeds, masks, point # (B, M, 768), (B, M), Point
+        return pc_embeds, ray_sims, masks, point # (B, M, 768), (B, M, 1), (B, M), Point
