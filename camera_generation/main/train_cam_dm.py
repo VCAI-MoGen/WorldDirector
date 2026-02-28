@@ -6,22 +6,26 @@ import wandb
 import datetime
 import time
 import json
+import random
 from pathlib import Path
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from accelerate.utils import gather_object, tqdm, broadcast_object_list
+from torch_scatter import scatter_mean
 
-from config import cfg, cfg_dict
+from config_large import cfg, cfg_dict
 from core_pkg.common.base import Trainer
 from core_pkg.models.vae_intr import CameraVAE
 from core_pkg.models.t5 import T5EncoderModel
 from core_pkg.common.utils.data_utils import out_to_trajectory, make_intrinsics, inverse_camera_matrix
 from core_pkg.common.utils.eval_utils import run_command_in_dir
+from core_pkg.common.utils.pc_utils import get_ray_sim_per_point
 from diffusers import DDPMScheduler, DDIMScheduler
 
 from evaluate.CLaTr.clip_extraction import load_clip_model, encode_text, save_feats_custom
 
 torch.manual_seed(cfg.random_seed)
 np.random.seed(cfg.random_seed)
+random.seed(cfg.random_seed)
 
 if cfg.model_type == 'baseline':
     from core_pkg.models.camera_diffusion_model import CameraDiffusionModel
@@ -57,7 +61,7 @@ def sample(model, scheduler, traj_len, text_emb, text_masks, point_emb, point_ma
 def train():
     T = cfg.diffusion_max_step 
     traj_len = (cfg.num_frames - 1) // 4 + 1
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     accelerator = Accelerator(log_with="wandb", mixed_precision="bf16", kwargs_handlers=[ddp_kwargs])
     device = accelerator.device
     if accelerator.is_main_process:
@@ -153,6 +157,12 @@ def train():
             data_name = data['data_name']
             text_prompt = data['text_prompt']
             traj = data['cam_param'].to(accelerator.device)
+            extrinsics = data['extrinsics']
+            intrinsics = data['intrinsics']
+            points = data['points']
+            inverse = data['inverse']
+
+            ray_info_list = [get_ray_sim_per_point(w2c, K, scatter_mean(points_single, inv, dim=0), device=device) for w2c, K, points_single, inv in zip(extrinsics, intrinsics, points, inverse)]
             B = traj.shape[0]
 
             with torch.no_grad():
@@ -160,7 +170,7 @@ def train():
                     if 'pc' in data:
                         point = data['pc']
                         if cfg.point_encoder != 'custom':
-                            pc_embeds, pc_masks, point_obj = pc_encoder(point)
+                            pc_embeds, pc_masks, point_obj = pc_encoder(point, ray_info_list)
                     elif 'pc_embeds' in data:
                         pc_embeds = data['pc_embeds'].to(device)
                         pc_masks = data['pc_masks'].to(device)
@@ -254,13 +264,19 @@ def train():
                     scale = data['avg_scale'].to(device)
                     width = data['width'].to(device)
                     height = data['height'].to(device)
+                    extrinsics = data['extrinsics']
+                    intrinsics = data['intrinsics']
+                    points = data['points']
+                    inverse = data['inverse']
+
+                    ray_info_list = [get_ray_sim_per_point(w2c, K, scatter_mean(points_single, inv, dim=0), device=device) for w2c, K, points_single, inv in zip(extrinsics, intrinsics, points, inverse)]
                     B = traj.shape[0]
 
                     if cfg.load_points:
                         if 'pc' in data:
                             point = data['pc']
                             if cfg.point_encoder != 'custom':
-                                pc_embeds, pc_masks, point_obj = pc_encoder(point)
+                                pc_embeds, pc_masks, point_obj = pc_encoder(point, ray_info_list)
                             else:
                                 pc_embeds, pc_masks, point_obj = model.pc_encoder(point)
                         elif 'pc_embeds' in data:

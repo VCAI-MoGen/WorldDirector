@@ -72,7 +72,7 @@ def train():
     os.makedirs(result_dir, exist_ok=True)
 
     trainer = Trainer(cfg=cfg)
-    trainer._make_batch_generator()
+    trainer._make_batch_generator(include_train=False)
     trainer._make_model()
 
     if cfg.sampling_type == "ddpm":

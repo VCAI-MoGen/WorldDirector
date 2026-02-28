@@ -30,9 +30,9 @@ if cfg.model_type == 'director':
 if cfg.model_type == 'baseline_mmdit':
     from core_pkg.models.camera_diffusion_model_mmdit import CameraDiffusionModel
 
-if cfg.use_concerto:
+if cfg.point_encoder == 'conerto':
     from core_pkg.models.pc_encoder import PCEncoder
-else:
+if cfg.point_encoder == 'custom':
     from core_pkg.models.pc_encoder_custom import PCEncoder
 
 @torch.no_grad()
@@ -98,9 +98,9 @@ def valid():
         tokenizer_path=os.path.join(cfg.t5_checkpoint_dir, cfg.t5_tokenizer_path),
         shard_fn=None)
     
-    if cfg.use_concerto:
+    if cfg.point_encoder == 'concerto':
         model = CameraDiffusionModel()
-    else:
+    elif cfg.point_encoder == 'custom':
         model = CameraDiffusionModel(pc_encoder=pc_encoder)
     model.load_state_dict(torch.load(cfg.val_ckpt_path, weights_only=True))
     model = model.to(device)
@@ -130,7 +130,7 @@ def valid():
             if cfg.load_points:
                 if 'pc' in data:
                     point = data['pc']
-                    if cfg.use_concerto:
+                    if cfg.point_encoder != 'custom':
                         pc_embeds, pc_masks, point_obj = pc_encoder(point)
                     else:
                         pc_embeds, pc_masks, point_obj = model.pc_encoder(point)
@@ -204,7 +204,7 @@ def valid():
                     "cx": pred_intrinsics[i][0][0][2],
                     "cy": pred_intrinsics[i][0][1][2],
                     "frames": [{
-                        "transform_matrix": matrix_traj_pred[i][frame_idx], 
+                        "transform_matrix": matrix_traj_ref[i][frame_idx], 
                         "monst3r_im_id": frame_idx + 1}
                         for frame_idx in range(len(matrix_traj_pred[i]))]
                 }

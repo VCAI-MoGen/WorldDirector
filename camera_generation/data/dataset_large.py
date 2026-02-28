@@ -13,7 +13,7 @@ from tqdm import tqdm
 from core_pkg.common.utils.camera_utils import get_cameras_from_json
 from core_pkg.common.utils.data_utils import normalize_camera_extrinsics_and_points
 import concerto
-
+import random
 
 def load_ply_as_pointcloud(path):
     mesh = trimesh.load(path)
@@ -27,16 +27,11 @@ def load_ply_as_pointcloud(path):
     return pc.astype(np.float32)
 
 class CamDataset(torch.utils.data.Dataset):
-    def __init__(self, cfg, type='train'):
+    def __init__(self, cfg):
         self.cfg = cfg
-        self.type = type
-        # if self.type == 'train':
-        #     self.dataset_path = self.cfg.train_dataset_dir
-        # if self.type == 'val':
-        #     self.dataset_path = self.cfg.val_dataset_dir
         self.dataset_dir_list = self.cfg.dataset_dir_list
 
-        if self.cfg.use_concerto:
+        if self.cfg.point_encoder == 'concerto':
             pc_transform_config = [
                 dict(type="CenterShift", apply_z=True),
                 dict(type="Update", keys_dict={"index_valid_keys": ["coord", "color", "normal"]}),
@@ -56,7 +51,7 @@ class CamDataset(torch.utils.data.Dataset):
                     feat_keys=("coord", "color", "normal"),
                 ),
             ]
-        else:
+        elif self.cfg.point_encoder == 'custom':
             pc_transform_config = [
                 dict(type="Update", keys_dict={"index_valid_keys": ["coord", "color"]}),
                 dict(
@@ -77,7 +72,8 @@ class CamDataset(torch.utils.data.Dataset):
             ]
         self.pc_transform = concerto.transform.Compose(pc_transform_config)
 
-        self.data_names, self.extrinsics_list, self.intrinsics_list, self.scene_paths, self.text_prompts, self.frames_list = self.load_data()
+        self.data_names, self.extrinsics_list, self.intrinsics_list, self.scene_paths, self.text_prompts, = self.load_data()
+        self.sample()
 
     def load_data(self):
         data_names = []
@@ -103,7 +99,7 @@ class CamDataset(torch.utils.data.Dataset):
                 cameras._calculate_w2c()
                 cameras._calculate_K()
                 extrinsics = cameras.world_to_camera.transpose(-1, -2) # (N_cam, 4, 4), transpose is needed
-                intrinsics = cameras.K # (N_cam, 3, 3)
+                intrinsics = cameras.K # (N_cam, 4, 4)
                 
                 if extrinsics.shape[0] < self.cfg.num_frames:
                     continue
@@ -132,7 +128,7 @@ class CamDataset(torch.utils.data.Dataset):
                     else:
                         prompt = v['prompt_camera_with_scene_video']['concise']
                     
-                    data_names.append(f'{dataset_name}/{data_name}_{k}')
+                    data_names.append(f'{dataset_name}_{data_name}_{k}')
                     text_prompts.append(prompt)
                     extrinsics_list.append(extrinsics[frame_idx[0]:frame_idx[1]])
                     intrinsics_list.append(intrinsics[frame_idx[0]:frame_idx[1]])
@@ -151,7 +147,24 @@ class CamDataset(torch.utils.data.Dataset):
             dataset_cnt_dist.append((dataset_name, dataset_cnt))
         # [print(name, cnt) for name, cnt in dataset_cnt_dist]
         # print(f"Total Data Count: {len(data_names)}")
-        return data_names, extrinsics_list, intrinsics_list, scene_paths, text_prompts, frames_list
+        return data_names, extrinsics_list, intrinsics_list, scene_paths, text_prompts
+
+    def sample(self):
+        sample_N = self.cfg.sample_data
+        if sample_N is None:
+            return
+        idx = random.sample(range(len(self.data_names)), sample_N)
+
+        def random_sample(target_list, target_idx):
+            return [target_list[i] for i in target_idx]
+
+        self.data_names = random_sample(self.data_names, idx)
+        self.extrinsics_list = random_sample(self.extrinsics_list, idx)
+        self.intrinsics_list = random_sample(self.intrinsics_list, idx)
+        self.scene_paths = random_sample(self.scene_paths, idx)
+        self.text_prompts = random_sample(self.text_prompts, idx)
+        return
+
     
     def __len__(self):
         return len(self.data_names)
@@ -186,25 +199,26 @@ class CamDataset(torch.utils.data.Dataset):
                 scene_data = torch.tensor(load_ply_as_pointcloud(scene_path))
             scene_data[:, 3:] *= 255.0
             normalized_extrinsics, normalized_scene_pc, avg_scale, mask = normalize_camera_extrinsics_and_points(extrinsics, scene_data[:, :3])
-            avg_scale_dir = os.path.join(os.path.dirname(scene_path), 'avg_scale')
-            os.makedirs(avg_scale_dir, exist_ok=True)
-            with open(os.path.join(avg_scale_dir, f'{data_name.split('_')[-1]}.json'), 'w') as f:
-                json.dump(avg_scale[0].item(), f)
+            # avg_scale_dir = os.path.join(os.path.dirname(scene_path), 'avg_scale')
+            # os.makedirs(avg_scale_dir, exist_ok=True)
+            # with open(os.path.join(avg_scale_dir, f'{data_name.split('_')[-1]}.json'), 'w') as f:
+            #     json.dump(avg_scale[0].item(), f)
 
             pc_embeds_path = os.path.join(os.path.dirname(scene_path), 'pc_embeds_decoded.pt')
             if self.cfg.load_saved_pc_embeds and os.path.exists(pc_embeds_path):
                 scene_embeds = torch.load(pc_embeds_path, map_location='cpu')
                 scene_data = None
             else:
-                scene_data[:, :3] = normalized_scene_pc
+                scene_data[:, :3] = normalized_scene_pc * 1.5
                 scene_data = scene_data[mask]
+                normalized_scene_pc = normalized_scene_pc[mask]
                 offset = torch.tensor([scene_data.shape[0]])
                 R_y_down_to_z_up = torch.tensor([
                     [1.0,  0,  0],
                     [0,  0, -1.0],
                     [0,  1.0,  0],
                 ])
-                scene_data[:, :3]  = scene_data[:, :3] @ R_y_down_to_z_up.T
+                scene_data[:, :3]  = scene_data[:, :3] @ R_y_down_to_z_up
                 scene_data = scene_data.numpy()
                 offset = offset.numpy()
                 point_obj = {
@@ -239,15 +253,19 @@ class CamDataset(torch.utils.data.Dataset):
             'width': width,
             'height': height,
             'avg_scale': avg_scale,
-            'text_prompt': text_prompt
+            'text_prompt': text_prompt,
+            'extrinsics': normalized_extrinsics,
+            'intrinsics': intrinsics[:, :3, :3],
+            'points': normalized_scene_pc,
+            'inverse': point_obj['inverse'],
         }
         # if torch.isnan(cam_param).any() or torch.isnan(avg_scale).any():
         #     print(data_name)
         #     input()
-        # if scene_data is not None:
-        #     data['pc'] = point_obj
-        # if scene_embeds is not None:
-        #     data['pc_embeds'] = scene_embeds
+        if scene_data is not None:
+            data['pc'] = point_obj
+        if scene_embeds is not None:
+            data['pc_embeds'] = scene_embeds
         
         return data
     

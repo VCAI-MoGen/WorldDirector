@@ -10,8 +10,10 @@ import torch.optim
 import torchvision.transforms as transforms
 from torch.nn.parallel.data_parallel import DataParallel
 from torch.utils.data.dataloader import default_collate
+from core_pkg.common.utils.pc_utils import get_ray_sim_per_point
+from torch.utils.data import random_split
 from core_pkg.models.camera_diffusion_model import get_model
-from dataset import CamDataset
+from dataset_large import CamDataset
 
 class Base(object):
     __metaclass__ = abc.ABCMeta
@@ -46,16 +48,25 @@ class Trainer(Base):
 
     def _make_batch_generator(self, include_train=True, include_val=True):
         # data load and construct batch generator
-        self.itr_per_epoch = math.ceil(len(self.trainset_loader) / self.cfg.num_gpus / self.cfg.batch_size)
+        
+        generator = torch.Generator().manual_seed(self.cfg.random_seed)
+
+        dataset = CamDataset(cfg=self.cfg)
+        train_size = int(0.9 * len(dataset))
+        test_size = len(dataset) - train_size
+        self.trainset_loader, self.validset_loader = random_split(
+            dataset,
+            [train_size, test_size],
+            generator=generator
+        )
 
         if include_train:
-            self.trainset_loader = CamDataset(cfg=self.cfg)
             self.batch_generator = DataLoader(dataset=self.trainset_loader, \
                                             batch_size=self.cfg.num_gpus*self.cfg.batch_size, \
                                                 shuffle=True, num_workers=self.cfg.num_thread, \
                                                 persistent_workers=True, drop_last=True, collate_fn=collate_fn)
+            self.itr_per_epoch = math.ceil(len(self.trainset_loader) / self.cfg.num_gpus / self.cfg.batch_size)
         if include_val:
-            self.validset_loader = CamDataset(cfg=self.cfg, type='val')
             self.valid_batch_generator = DataLoader(dataset=self.validset_loader, \
                                             batch_size=self.cfg.num_gpus*self.cfg.batch_size, \
                                                 shuffle=False, num_workers=self.cfg.num_thread, \
@@ -123,6 +134,8 @@ def collate_fn(batch):
 
             elif key == "pc":
                 new_batch[key] = point_collate_fn([d[key] for d in batch])
+            elif key == 'points' or key == 'inverse':
+                new_batch[key] = [d[key] for d in batch]
 
             else:
                 new_batch[key] = collate_fn([d[key] for d in batch])

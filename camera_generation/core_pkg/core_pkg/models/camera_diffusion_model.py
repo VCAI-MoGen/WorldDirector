@@ -91,7 +91,7 @@ class CameraDiffusionModel(nn.Module):
         num_layers=8,
         cross_layers=4,
         num_heads=8,
-        point_dim=1280,
+        point_dim=769,
         text_dim=4096,
         dropout=0.1,
         pc_encoder=None,
@@ -163,10 +163,10 @@ class CameraDiffusionModel(nn.Module):
                 point_tok = norm(point_tok)
                 point_tok = ca(point_tok, context, key_padding_mask=~context_mask)
                 point_tok = ffn(point_tok) + point_tok
-            context = torch.cat([context, point_tok], dim=1)
-            context_mask = torch.cat([context_mask, point_mask], dim=1)
-            # context = torch.cat([context[:, 0:1, :], point_tok], dim=1)
-            # context_mask = torch.cat([context_mask[:, 0:1], point_mask], dim=1)
+            # context = torch.cat([context, point_tok], dim=1)
+            # context_mask = torch.cat([context_mask, point_mask], dim=1)
+            context = torch.cat([context[:, 0:1, :], point_tok], dim=1)
+            context_mask = torch.cat([context_mask[:, 0:1], point_mask], dim=1)
             
         
         for norm, self_attn, context_cross_attn, mlp in self.layers:
