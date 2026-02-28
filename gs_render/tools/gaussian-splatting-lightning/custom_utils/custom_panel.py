@@ -21,11 +21,10 @@ class CustomPanel:
         self.renderer = renderer
         self.recon = recon
 
-        self.is_frustum_visualized = False
+        self.is_frustum_visualized = {"colmap": False, "GS": False, "npz": False, "npz_w2c": False, "vae": False, "npy": False}
+        self.frustum_handles = {"colmap": [], "GS": [], "npz": [], "npz_w2c": [], "vae": [], "npy": []}
 
         self.pcd = None
-
-        self.frustum_handles = []
 
         self._setup_vis_folder()
     
@@ -33,7 +32,7 @@ class CustomPanel:
         with self.server.gui.add_folder("Viz"):
             self.camera_type = self.server.gui.add_dropdown(
                 "Camera Type",
-                ["colmap", "GS", "npz", "vae"],
+                ["colmap", "GS", "npz", "npz_w2c", "vae", "npy"],
                 initial_value="colmap",
             )
 
@@ -61,8 +60,12 @@ class CustomPanel:
                         cameras = self.get_cameras_from_json()
                     elif camera_type == "npz":
                         cameras = self.get_cameras_from_npz()
+                    elif camera_type == "npz_w2c":
+                        cameras = self.get_cameras_from_npz(is_w2c=True)
                     elif camera_type == "vae":
                         cameras = self.get_cameras_from_vae()
+                    elif camera_type == "npy":
+                        cameras = self.get_cameras_from_npy()
                     else:
                         raise ValueError("Camera type invalid.", camera_type)
                     renders = self.render(cameras, fps=self.fps.value)
@@ -86,8 +89,12 @@ class CustomPanel:
                         cameras = self.get_cameras_from_json()
                     elif camera_type == "npz":
                         cameras = self.get_cameras_from_npz()
+                    elif camera_type == "npz_w2c":
+                        cameras = self.get_cameras_from_npz(is_w2c=True)
                     elif camera_type == "vae":
                         cameras = self.get_cameras_from_vae()
+                    elif camera_type == "npy":
+                        cameras = self.get_cameras_from_npy()
                     else:
                         raise ValueError("Camera type invalid.", camera_type)
                     self.render_with_client(event.client, cameras, self.root_path)
@@ -153,9 +160,10 @@ class CustomPanel:
                 client = event.client
                 assert client is not None
 
-                self.is_frustum_visualized[camera_type] = not self.is_frustum_visualized[camera_type]
+                
                 
                 camera_type = self.camera_type.value
+                self.is_frustum_visualized[camera_type] = not self.is_frustum_visualized[camera_type]
                 cameras = None
                 if camera_type == "colmap":
                     cameras = self.get_cameras_from_colmap()
@@ -163,8 +171,12 @@ class CustomPanel:
                     cameras = self.get_cameras_from_json()
                 elif camera_type == "npz":
                     cameras = self.get_cameras_from_npz()
+                elif camera_type == "npz_w2c":
+                    cameras = self.get_cameras_from_npz(is_w2c=True)
                 elif camera_type == "vae":
                     cameras = self.get_cameras_from_vae()
+                elif camera_type == "npy":
+                    cameras = self.get_cameras_from_npy()
                 else:
                     raise ValueError("Camera type invalid.", camera_type)
             
@@ -213,8 +225,12 @@ class CustomPanel:
 
             self.pcd_type = self.server.gui.add_dropdown(
                 "Point Cloud Type",
-                ["colmap", "ply", "npy"],
-                initial_value="colmap",
+                ["colmap", "ply", "npy", "pt", "pt_input"],
+                initial_value="pt",
+            )
+            self.pcd_pt_path = self.server.gui.add_text(
+                "Point Cloud pt path",
+                initial_value="Hello world",
             )
 
             vis_point_cloud_button = self.server.gui.add_button(
@@ -236,6 +252,10 @@ class CustomPanel:
                     points, colors = self.get_pcd_from_ply()
                 elif self.pcd_type.value == "npy":
                     points, colors = self.get_pcd_from_npy()
+                elif self.pcd_type.value == "pt":
+                    points, colors = self.get_pcd_from_pt()
+                elif self.pcd_type.value == "pt_input":
+                    points, colors = self.get_pcd_from_pt(self.pcd_pt_path.value)
 
                 self.pcd = self.server.scene.add_point_cloud(
                     name="/point_cloud",
@@ -243,6 +263,96 @@ class CustomPanel:
                     colors=colors,
                     point_size=0.01,
                 )
+            self.traj_path = self.server.gui.add_text(
+                "Trajectory path",
+                initial_value="Hello world",
+            )
+
+            vis_camera_frustums_button = self.server.gui.add_button(
+                    "Visualize Camera Frustums",
+                    color="Green",
+                    icon=viser.Icon.PLAYER_PLAY,
+                )
+            @vis_camera_frustums_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                client = event.client
+                assert client is not None
+
+                camera_type = self.camera_type.value
+                self.is_frustum_visualized[camera_type] = not self.is_frustum_visualized[camera_type]
+                camera_dir_path = "/data2/ckd248/SCVideo/camera_generation/infer_vae/20260204_043019"
+                camera_paths = [os.path.join(camera_dir_path, camera_path) for camera_path in os.listdir(camera_dir_path)]
+                camera_paths = sorted(
+                    camera_paths,
+                    key=lambda p: int(os.path.splitext(os.path.basename(p))[0].split("_")[-2])
+                )
+                # camera_paths = camera_paths[::2]
+                print(camera_paths)
+                for j, camera_path in enumerate(camera_paths):
+                    self.traj_path.value = camera_path 
+                    print(self.traj_path)
+                    cameras = self.get_cameras_from_npy()
+
+                    fov, quat, position = camera_to_fov_quat_position(cameras[0])
+                    self.frustum_handles[camera_type].clear()
+
+                    if not self.is_frustum_visualized[camera_type]:
+                        return
+
+                    f_min, f_max = self.frustum_range.value
+                    f_min = int(f_min)
+                    f_max = int(f_max)
+                    cam_min = f_min
+                    cam_max = min(f_max, len(cameras))
+
+                    start_color = np.array([1.0, 0.0, 0.0])
+                    end_color = np.array([0.0, 0.0, 1.0])
+                    t = np.linspace(0, 1, len(camera_paths))[:, None]  # (N, 1)
+                    colors = (1 - t) * start_color + t * end_color  # (N, 3)
+
+                    for i in range(cam_min, cam_max, self.frustum_interval.value):
+                        camera = cameras[i]
+                        fov, quat, position = camera_to_fov_quat_position(camera)
+
+                        handle = add_frustum_spline(
+                            scene=client.scene,
+                            name=f"camera_{i}_{j}_frustum_{camera_type}",
+                            fov_y=fov,
+                            aspect=camera.cx / camera.cy,
+                            wxyz=quat,
+                            position=position,
+                            far=1.0,
+                            scale=self.frustum_scale.value,
+                            thickness=self.frustum_thickness.value,
+                            color=colors[j],
+                        )
+
+                        self.frustum_handles[camera_type].append(handle)
+            capture_camerea_button = self.server.gui.add_button(
+                    "Capture Current Camera as First Frame",
+                    color="Black",
+                    icon=viser.Icon.PLAYER_PLAY,
+                )
+            @capture_camerea_button.on_click
+            def _(event: viser.GuiEvent) -> None:
+                client = event.client
+                assert client is not None
+
+                camera = client.camera
+                wxyz = camera.wxyz
+                t = camera.position
+                R = Rotation.from_quat(wxyz[[[1, 2, 3, 0]]]).as_matrix()[0]
+                E0 = np.eye(4)
+                E0[:3, :3] = R.T
+                E0[:3, 3] = -R.T @ t
+
+                save_path = os.path.join(self.root_path, "e0.json")
+                with open(save_path, 'w') as f:
+                    json.dump(E0.tolist(), f)
+                
+                print(E0)
+                print(f"Capture saved in : {save_path}")
+                
 
     def get_cameras_from_colmap(self):
         if self.recon is None:
@@ -256,23 +366,26 @@ class CustomPanel:
         cameras = build_cameras(w2c_ext, intrinsics)
         return cameras
 
-    def get_cameras_from_npz(self):
-        cam_params = np.load(f"{self.root_path}/camera_params.npz", allow_pickle=True)
-        # extrinsics = cam_params['extrinsics']
-        c2w = cam_params['poses']
+    def get_cameras_from_npz(self, is_w2c=False):
+        cam_params = np.load(self.traj_path.value, allow_pickle=True)
+        
         intrinsics = cam_params['intrinsics']
 
-        N = c2w.shape[0]
+        if is_w2c:
+            w2c = cam_params['poses']
+        else:
+            c2w = cam_params['poses']
+            N = c2w.shape[0]
 
-        R_c2w = c2w[:, :3, :3]
-        t_c2w = c2w[:, :3, 3:]
+            R_c2w = c2w[:, :3, :3]
+            t_c2w = c2w[:, :3, 3:]
 
-        R_w2c = np.transpose(R_c2w, (0, 2, 1))
-        t_w2c = (-R_w2c @ t_c2w).squeeze(-1)
+            R_w2c = np.transpose(R_c2w, (0, 2, 1))
+            t_w2c = (-R_w2c @ t_c2w).squeeze(-1)
 
-        w2c = np.tile(np.eye(4), (N, 1, 1))
-        w2c[:, :3, :3] = R_w2c
-        w2c[:, :3, 3] = t_w2c
+            w2c = np.tile(np.eye(4), (N, 1, 1))
+            w2c[:, :3, :3] = R_w2c
+            w2c[:, :3, 3] = t_w2c
 
         # cameras = build_cameras(extrinsics, intrinsics)
         cameras = build_cameras(w2c, intrinsics)
@@ -281,6 +394,15 @@ class CustomPanel:
     def get_cameras_from_vae(self):
         _, intrinsics = get_camera_params_from_json(os.path.join(self.root_path, "cameras.json"))
         w2c_ext = np.load(f"{self.root_path}/vae4.npy", allow_pickle=True)
+        N = w2c_ext.shape[0]
+        intrinsics = intrinsics[:N]
+        cameras = build_cameras(w2c_ext, intrinsics)
+        return cameras
+    
+    def get_cameras_from_npy(self):
+        _, intrinsics = get_camera_params_from_json(os.path.join(self.root_path, "cameras.json"))
+        w2c_ext = np.load(self.traj_path.value, allow_pickle=True) # (N, 4, 4)
+        print(w2c_ext.shape)
         N = w2c_ext.shape[0]
         intrinsics = intrinsics[:N]
         cameras = build_cameras(w2c_ext, intrinsics)
@@ -315,6 +437,15 @@ class CustomPanel:
         point_cloud_path = os.path.join(self.root_path, "point_cloud.npy")
         points = np.load(point_cloud_path)
         colors = np.repeat([[0., 0., 1.0]], len(points), axis=0)
+
+        return points, colors
+    
+    def get_pcd_from_pt(self, point_cloud_path=None):
+        if point_cloud_path is None:
+            point_cloud_path = os.path.join(self.root_path, "scene.pt")
+        point_clouds = torch.load(point_cloud_path).numpy()
+        points = point_clouds[:, :3]
+        colors = point_clouds[:, 3:]
 
         return points, colors
 
