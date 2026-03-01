@@ -15,7 +15,7 @@ import torch.nn as nn
 
 from config_large import cfg, cfg_dict
 from core_pkg.common.base import Trainer
-from core_pkg.models.vae_intr import CameraVAE
+from core_pkg.models.vae_intr_large import CameraVAE
 from core_pkg.models.t5 import T5EncoderModel
 from core_pkg.common.utils.data_utils import out_to_trajectory, make_intrinsics, inverse_camera_matrix
 from core_pkg.common.utils.eval_utils import run_command_in_dir

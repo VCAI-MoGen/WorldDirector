@@ -15,7 +15,7 @@ import torch.nn as nn
 
 from config_large import cfg, cfg_dict
 from core_pkg.common.base import Trainer
-from core_pkg.models.vae_intr import CameraVAE
+from core_pkg.models.vae_intr_large import CameraVAE
 from core_pkg.models.t5 import T5EncoderModel
 from core_pkg.common.utils.data_utils import out_to_trajectory, make_intrinsics, inverse_camera_matrix
 from core_pkg.common.utils.eval_utils import run_command_in_dir
@@ -48,7 +48,7 @@ if cfg.point_encoder == 'mosaic':
 def sample(model, scheduler, traj_len, text_emb, text_masks, point_emb, point_mask):
     B = text_emb.size(0)
     device = text_emb.device
-    x_t = torch.randn(B, traj_len, 32).to(device)
+    x_t = torch.randn(B, traj_len, cfg.cam_dim).to(device)
 
     scheduler.set_timesteps(num_inference_steps=cfg.diffusion_inference_step, device=device)
     for t in scheduler.timesteps:

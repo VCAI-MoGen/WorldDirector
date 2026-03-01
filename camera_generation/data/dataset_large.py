@@ -197,17 +197,6 @@ class CamDataset(torch.utils.data.Dataset):
             }
             point_obj = self.pc_transform(point_obj)
         elif self.cfg.load_points:
-            if scene_path.endswith(".pt"):
-                scene_data = torch.load(scene_path) # (N, 6), coordinates (3) + color (3, range:0~1), 
-            elif scene_path.endswith(".ply"):
-                scene_data = torch.tensor(load_ply_as_pointcloud(scene_path))
-            scene_data[:, 3:] *= 255.0
-            normalized_extrinsics, normalized_scene_pc, avg_scale, mask = normalize_camera_extrinsics_and_points(extrinsics, scene_data[:, :3])
-            # avg_scale_dir = os.path.join(os.path.dirname(scene_path), 'avg_scale')
-            # os.makedirs(avg_scale_dir, exist_ok=True)
-            # with open(os.path.join(avg_scale_dir, f'{data_name.split('_')[-1]}.json'), 'w') as f:
-            #     json.dump(avg_scale[0].item(), f)
-
             pc_embeds_path = os.path.join(self.cfg.embed_path, data_name)
             if self.cfg.load_saved_pc_embeds and os.path.exists(pc_embeds_path):
                 scene_embeds_data = torch.load(pc_embeds_path, map_location='cpu')
@@ -219,6 +208,17 @@ class CamDataset(torch.utils.data.Dataset):
                 saved_avg_scale = torch.tensor([json.load(open(saved_avg_scale_path, "r"))])
                 normalized_extrinsics, _, avg_scale, mask = normalize_camera_extrinsics_and_points(extrinsics, avg_scale=saved_avg_scale)
             else:
+                if scene_path.endswith(".pt"):
+                    scene_data = torch.load(scene_path) # (N, 6), coordinates (3) + color (3, range:0~1), 
+                elif scene_path.endswith(".ply"):
+                    scene_data = torch.tensor(load_ply_as_pointcloud(scene_path))
+                scene_data[:, 3:] *= 255.0
+                normalized_extrinsics, normalized_scene_pc, avg_scale, mask = normalize_camera_extrinsics_and_points(extrinsics, scene_data[:, :3])
+                # avg_scale_dir = os.path.join(os.path.dirname(scene_path), 'avg_scale')
+                # os.makedirs(avg_scale_dir, exist_ok=True)
+                # with open(os.path.join(avg_scale_dir, f'{data_name.split('_')[-1]}.json'), 'w') as f:
+                #     json.dump(avg_scale[0].item(), f)
+                
                 scene_data[:, :3] = normalized_scene_pc * 1.8
                 scene_data = scene_data[mask]
                 normalized_scene_pc = normalized_scene_pc[mask]
