@@ -6,6 +6,7 @@ from concerto.structure import Point
 from torch.nn.utils.rnn import pad_sequence
 from concerto.utils import batch2offset
 from torch_scatter import scatter_mean, scatter_max
+import copy
 
 import numpy as np
 
@@ -131,10 +132,10 @@ class PCEncoder(nn.Module):
         point = Point(point_obj)
         point = self.model(point)
 
-        p2v_map_list = self.get_p2v_map(point.copy())
+        p2v_map_list = self.get_p2v_map(copy.deepcopy(point))
 
         visibility_in_first_cam = [scatter_max(ray_info[1], p2v_map, dim=0)[0].unsqueeze(-1) for ray_info, p2v_map in zip(ray_info_list, p2v_map_list)]
-        ray_sim_list = [scatter_mean(ray_info[0], p2v_map, dim=0).unsqueeze(-1) for ray_info, p2v_map in zip(ray_info_list, p2v_map_list)]
+        ray_sim_list = [scatter_mean(ray_info[0], p2v_map, dim=1).transpose(0, 1) for ray_info, p2v_map in zip(ray_info_list, p2v_map_list)]
 
         # Decode
         # _, point = self.decode(point, num_iter=1)

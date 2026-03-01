@@ -16,19 +16,19 @@ def build_dataset_dir_list():
     dataset_dir_list += dv_dataset_dir_list
 
     dynpose_data_path = '/data1/cympyc1785/SceneData/DynamicVerse/scenes/dynpose-100k'
-    dp_dataset_dir_list = [os.path.join(dynpose_data_path, scene_type) for scene_type in sorted(os.listdir(dynpose_data_path))]
+    dp_dataset_dir_list = [os.path.join(dynpose_data_path, scene_type) for scene_type in sorted(os.listdir(dynpose_data_path))][:31]
     dataset_dir_list += dp_dataset_dir_list
 
     # datadop_dir_list = ['/home/ckd248/data/SCVideo/camera_generation/tools/GenDoP/DataDoP/ours']
     # dataset_dir_list += datadop_dir_list
 
-    dataset_dir_list = dataset_dir_list[0:1]
+    # dataset_dir_list = dataset_dir_list[0:1]
 
     return dataset_dir_list
 
 class Config:
 
-    exp_name = 'cross_attn_wo_text_add_vis'
+    exp_name = 'wo_vae_w_bin_wo_attnloss'
 
     # Path
     cur_dir = osp.dirname(os.path.abspath(__file__))
@@ -36,6 +36,7 @@ class Config:
     data_dir = osp.join(root_dir, 'data')
     dataset_dir_list = build_dataset_dir_list()
     val_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260226_082914_cross_attn/ckpts/600.pth'
+    embed_path = '/home/ckd248/data/SCVideo/camera_generation/dataset/pc_embeds'
     random_seed = 42
 
     # Training
@@ -44,9 +45,9 @@ class Config:
     accum_steps = 1
     epochs = 2000
     save_epoch = 50
-    sample_data = 10000
+    sample_data = 25000
     load_points = True
-    load_saved_pc_embeds = False
+    load_saved_pc_embeds = True
     attn_loss_weight = 1e-2
 
     # Diffusion
@@ -63,12 +64,19 @@ class Config:
     steps_offset = 1
 
     # VAE
+    use_vae = False
+    if use_vae:
+        num_cam = 13
+        cam_dim = 64
+    else:
+        num_cam = 49
+        cam_dim = 11
     vae_beta = 1e-3
     vae_latent_scale = 0.4467666
     vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260202_065659/ckpts/400.pth'
 
     num_gpus = 1
-    num_thread = 8
+    num_thread = 4
     num_frames = 49
 
     # Text encoder

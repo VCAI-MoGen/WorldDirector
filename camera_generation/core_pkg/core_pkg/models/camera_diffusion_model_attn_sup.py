@@ -125,7 +125,6 @@ class CameraDiffusionModel(nn.Module):
         self.out = nn.Linear(hidden_dim, cam_dim)
         self.text_cross_attn_weight = None
         self.point_cross_attn_weight = None
-        self.mm_cross_attn_weight = None
 
         self.pc_encoder = pc_encoder
 
@@ -148,6 +147,7 @@ class CameraDiffusionModel(nn.Module):
         point_tok = self.point_proj(point_emb)
         point_tok = point_tok * point_mask.unsqueeze(-1)
         
+        cross_attn_list = []
         for norm1, self_attn, text_cross_attn, mlp1, norm2, point_cross_attn, mlp2 in self.layers:
 
             scale1, shift1 = self.mod1(t_embed).chunk(2, dim=-1)
@@ -171,8 +171,23 @@ class CameraDiffusionModel(nn.Module):
             h = point_cross_attn(h, point_tok, key_padding_mask=~point_mask)
             h = mlp2(h) + h
 
+            cross_attn_list.append(point_cross_attn.attn_weight)
+            # if self.training is False:
+            #     if self.text_cross_attn_weight is None:
+            #         self.text_cross_attn_weight = text_cross_attn.attn_weight
+            #         self.point_cross_attn_weight = point_cross_attn.attn_weight
+            #     else:
+            #         self.text_cross_attn_weight += text_cross_attn.attn_weight
+            #         self.point_cross_attn_weight += point_cross_attn.attn_weight
+            
+            
+        # if self.training is False:
+        #     self.text_cross_attn_weight /= len(self.layers)
+        #     self.point_cross_attn_weight /= len(self.layers)
+
         h = h[:, :T, :]
-        return self.out(h)   # (B, T, 9)
+        cross_attn = torch.stack(cross_attn_list)
+        return self.out(h), cross_attn   # (B, T, 9)
     
 def get_model():
     model = CameraDiffusionModel()

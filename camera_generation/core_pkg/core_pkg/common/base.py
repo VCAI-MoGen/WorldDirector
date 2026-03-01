@@ -14,6 +14,7 @@ from core_pkg.common.utils.pc_utils import get_ray_sim_per_point
 from torch.utils.data import random_split
 from core_pkg.models.camera_diffusion_model import get_model
 from dataset_large import CamDataset
+from torch.nn.utils.rnn import pad_sequence
 
 class Base(object):
     __metaclass__ = abc.ABCMeta
@@ -101,36 +102,42 @@ def collate_fn(batch):
                 embeds_list = [d[key] for d in batch]   # [(L1,D), (L2,D), ...]
 
                 lengths = [e.shape[0] for e in embeds_list]
-                max_len = max(lengths)
-                dim = embeds_list[0].shape[1]
+                pc_embeds = pad_sequence(embeds_list, batch_first=True)  # (B, N_max, D)
+                lengths = torch.tensor([x.shape[0] for x in embeds_list])
+                masks = torch.arange(pc_embeds.shape[1])[None, :] < lengths[:, None]
+                masks = masks.to(pc_embeds).bool()
+                new_batch["pc_embeds"] = pc_embeds  # (B, max_len, D)
+                new_batch["pc_masks"] = masks     # (B, max_len)
+                # max_len = max(lengths)
+                # dim = embeds_list[0].shape[1]
 
-                device = embeds_list[0].device
-                dtype = embeds_list[0].dtype
+                # device = embeds_list[0].device
+                # dtype = embeds_list[0].dtype
 
-                padded_embeds = []
-                masks = []
+                # padded_embeds = []
+                # masks = []
 
-                for e, L in zip(embeds_list, lengths):
-                    pad_len = max_len - L
+                # for e, L in zip(embeds_list, lengths):
+                #     pad_len = max_len - L
 
-                    # zero padding
-                    if pad_len > 0:
-                        pad = torch.zeros(pad_len, dim, device=device, dtype=dtype)
-                        padded = torch.cat([e, pad], dim=0)
-                    else:
-                        padded = e
+                #     # zero padding
+                #     if pad_len > 0:
+                #         pad = torch.zeros(pad_len, dim, device=device, dtype=dtype)
+                #         padded = torch.cat([e, pad], dim=0)
+                #     else:
+                #         padded = e
 
-                    padded_embeds.append(padded)
+                #     padded_embeds.append(padded)
 
-                    # mask (1 = valid, 0 = pad)
-                    mask = torch.cat([
-                        torch.ones(L, device=device),
-                        torch.zeros(pad_len, device=device)
-                    ])
-                    masks.append(mask)
+                #     # mask (1 = valid, 0 = pad)
+                #     mask = torch.cat([
+                #         torch.ones(L, device=device),
+                #         torch.zeros(pad_len, device=device)
+                #     ])
+                #     masks.append(mask)
 
-                new_batch["pc_embeds"] = torch.stack(padded_embeds, dim=0)  # (B, max_len, D)
-                new_batch["pc_masks"] = torch.stack(masks, dim=0).bool()      # (B, max_len)
+                # new_batch["pc_embeds"] = torch.stack(pc_embeds, dim=0)  # (B, max_len, D)
+                # new_batch["pc_masks"] = torch.stack(masks, dim=0).bool()      # (B, max_len)
 
             elif key == "pc":
                 new_batch[key] = point_collate_fn([d[key] for d in batch])

@@ -40,7 +40,7 @@ class Config:
 
     # Training
     lr = 1e-4
-    batch_size = 128
+    batch_size = 256
     accum_steps = 1
     epochs = 2000
     save_epoch = 50
@@ -67,7 +67,7 @@ class Config:
     vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260202_065659/ckpts/400.pth'
 
     num_gpus = 1
-    num_thread = 8
+    num_thread = 4
     num_frames = 49
 
     # Text encoder

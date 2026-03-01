@@ -29,7 +29,7 @@ np.random.seed(cfg.random_seed)
 random.seed(cfg.random_seed)
 
 if cfg.model_type == 'baseline':
-    from core_pkg.models.camera_diffusion_model import CameraDiffusionModel
+    from core_pkg.models.camera_diffusion_model_base import CameraDiffusionModel
 if cfg.model_type == 'director':
     from core_pkg.models.camera_diffusion_model_director import CameraDiffusionModel
 if cfg.model_type == 'baseline_mmdit':
@@ -48,7 +48,7 @@ if cfg.point_encoder == 'mosaic':
 def sample(model, scheduler, traj_len, text_emb, text_masks, point_emb, point_mask):
     B = text_emb.size(0)
     device = text_emb.device
-    x_t = torch.randn(B, traj_len, 32).to(device)
+    x_t = torch.randn(B, traj_len, cfg.cam_dim).to(device)
 
     scheduler.set_timesteps(num_inference_steps=cfg.diffusion_inference_step, device=device)
     for t in scheduler.timesteps:
@@ -63,8 +63,8 @@ def sample(model, scheduler, traj_len, text_emb, text_masks, point_emb, point_ma
 
 def train():
     T = cfg.diffusion_max_step 
-    traj_len = (cfg.num_frames - 1) // 4 + 1
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+    traj_len = cfg.num_cam
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(log_with="wandb", mixed_precision="bf16", kwargs_handlers=[ddp_kwargs])
     device = accelerator.device
     if accelerator.is_main_process:
@@ -130,16 +130,17 @@ def train():
         text_encoder, tokenizer = get_model(cfg.clip_repo_name, device=device)
     
     if cfg.point_encoder != 'custom':
-        model = CameraDiffusionModel()
+        model = CameraDiffusionModel(cam_dim=cfg.cam_dim)
     else:
-        model = CameraDiffusionModel(pc_encoder=pc_encoder)
+        model = CameraDiffusionModel(cam_dim=cfg.cam_dim, pc_encoder=pc_encoder)
     
     model.train()
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
 
-    camera_vae = CameraVAE().to(device)
-    camera_vae.load_state_dict(torch.load(cfg.vae_ckpt_path, map_location=device))
-    camera_vae.eval()
+    if cfg.use_vae:
+        camera_vae = CameraVAE().to(device)
+        camera_vae.load_state_dict(torch.load(cfg.vae_ckpt_path, map_location=device))
+        camera_vae.eval()
 
     # For evaluation
     clip_model = load_clip_model(cfg.clip_version, device=device)
@@ -149,9 +150,6 @@ def train():
     model, opt, train_dataloader, valid_dataloader = accelerator.prepare(
         model, opt, trainer.batch_generator, trainer.valid_batch_generator
     )
-
-    if cfg.model_type == 'baseline_attn_sup':
-        kl_loss = nn.KLDivLoss(reduction="batchmean")
 
     for epoch in range(cfg.epochs):
         pbar = tqdm(train_dataloader)
@@ -164,24 +162,19 @@ def train():
             data_name = data['data_name']
             text_prompt = data['text_prompt']
             traj = data['cam_param'].to(accelerator.device)
-            extrinsics = data['extrinsics']
-            intrinsics = data['intrinsics']
-            points = data['points']
-            inverse = data['inverse']
-
-            ray_info_list = [get_ray_sim_per_point(w2c, K, scatter_mean(points_single, inv, dim=0), device=device) for w2c, K, points_single, inv in zip(extrinsics, intrinsics, points, inverse)]
             B = traj.shape[0]
 
+            t2 = time.time()
             with torch.no_grad():
                 if cfg.load_points:
                     if 'pc' in data:
                         point = data['pc']
                         if cfg.point_encoder != 'custom':
-                            pc_embeds, ray_sims, pc_masks, point_obj = pc_encoder(point, ray_info_list)
+                            pc_embeds, ray_sims, pc_masks, point_obj = pc_encoder(point)
                     elif 'pc_embeds' in data:
                         pc_embeds = data['pc_embeds'].to(device)
                         pc_masks = data['pc_masks'].to(device)
-                    t2 = time.time()
+                    t3 = time.time()
                     # PC Embeds preprocessing
                     # # print(data_name)
                     # data_path = os.path.join(trainer.batch_generator.dataset.dataset_path, data_name[0])
@@ -206,8 +199,11 @@ def train():
                     text_embeds, text_masks = encode_text_clip(text_encoder, tokenizer, text_prompt, device=device)
                 text_embeds = text_embeds.float()
                 text_masks = text_masks.bool()
-                traj_latents = camera_vae.encode(traj) / cfg.vae_latent_scale
-                t3 = time.time()
+                if cfg.use_vae:
+                    traj_latents = camera_vae.encode(traj) / cfg.vae_latent_scale
+                else:
+                    traj_latents = traj
+                t4 = time.time()
             
             if 'pc' in data and cfg.point_encoder == 'custom':
                 pc_embeds, pc_masks, point_obj = model.pc_encoder(point)
@@ -222,36 +218,13 @@ def train():
             noisy_x = noise_scheduler.add_noise(traj_latents, noise, timesteps)
             noise_pred = model(noisy_x, timesteps.float(), text_embeds, text_masks, pc_embeds, pc_masks)
             loss = F.mse_loss(noise_pred, noise)
-
-            if cfg.model_type == 'baseline_attn_sup':
-                eps = 1e-8
-                point_ca_weights = torch.stack([point_cross_attn.attn_weight for _, _, _, _, _, point_cross_attn, _ in model.layers]) # (N_layer, B, N_c, N_p)
-                _, B, N_c, N_p = point_ca_weights.shape
-                ray_sims = ray_sims.squeeze(-1)
-                target = ray_sims.masked_fill(~pc_masks, -1e9)
-                target = F.softmax(target, dim=-1) * pc_masks
-                target = target / (target.sum(dim=-1, keepdim=True) + eps) # (B, N_p)
-                target = target.unsqueeze(1).expand(B, N_c, N_p).unsqueeze(0) # (1, B, N_c, N_p)
-
-                pred = point_ca_weights * pc_masks.unsqueeze(0).unsqueeze(2)
-                pred = pred / (pred.sum(dim=-1, keepdim=True) + eps)
-                log_pred = torch.log(pred + eps)
-
-                loss_kl = F.kl_div(
-                    log_pred,
-                    target,
-                    reduction="none"
-                )  # (L,B,T,P)
-                loss_kl = loss_kl * pc_masks.unsqueeze(0).unsqueeze(2)
-                loss_kl = loss_kl.sum(dim=-1).mean()
-                loss += cfg.attn_loss_weight * loss_kl
                 
-            t4 = time.time()
+            t5 = time.time()
             accelerator.backward(loss)
             opt.step()
             opt.zero_grad(set_to_none=True)
             global_step += 1
-            t5 = time.time()
+            t6 = time.time()
             accelerator.log({"train/loss": loss.item()}, step=global_step)
             pbar.set_description(f"Epoch {epoch} | Loss {loss.item():.4f}")
 
@@ -259,11 +232,12 @@ def train():
             total_samples += B
             # print(
             #     f"data {t1-t0:.3f} | "
-            #     f"pc {t2-t1:.3f} | "
-            #     f"text {t3-t2:.3f} | "
-            #     f"model {t4-t3:.3f} | "
-            #     f"loss {t5-t4:.3f} | "
-            #     f"total {t5-t0:.3f} | "
+            #     f"ray_sim {t2-t1:.3f} | "
+            #     f"point {t3-t2:.3f} | "
+            #     f"text {t4-t3:.3f} | "
+            #     f"model {t5-t4:.3f} | "
+            #     f"loss {t6-t5:.3f} | "
+            #     f"total {t6-t0:.3f} | "
             # )
             t0 = time.time()
 
@@ -295,19 +269,14 @@ def train():
                     scale = data['avg_scale'].to(device)
                     width = data['width'].to(device)
                     height = data['height'].to(device)
-                    extrinsics = data['extrinsics']
-                    intrinsics = data['intrinsics']
-                    points = data['points']
-                    inverse = data['inverse']
 
-                    ray_info_list = [get_ray_sim_per_point(w2c, K, scatter_mean(points_single, inv, dim=0), device=device) for w2c, K, points_single, inv in zip(extrinsics, intrinsics, points, inverse)]
                     B = traj.shape[0]
 
                     if cfg.load_points:
                         if 'pc' in data:
                             point = data['pc']
                             if cfg.point_encoder != 'custom':
-                                pc_embeds, pc_masks, point_obj = pc_encoder(point, ray_info_list)
+                                pc_embeds, pc_masks, point_obj = pc_encoder(point)
                             else:
                                 pc_embeds, pc_masks, point_obj = model.pc_encoder(point)
                         elif 'pc_embeds' in data:
@@ -322,14 +291,20 @@ def train():
                         text_embeds, text_masks = encode_text_clip(text_encoder, tokenizer, text_prompt, device=device)
                     text_embeds = text_embeds.float()
                     text_masks = text_masks.bool()
-                    traj_latents = camera_vae.encode(traj) / cfg.vae_latent_scale
+                    if cfg.use_vae:
+                        traj_latents = camera_vae.encode(traj) / cfg.vae_latent_scale
+                    else:
+                        traj_latents = traj
                 
                     out = sample(model, noise_scheduler, traj_len, text_embeds, text_masks, pc_embeds, pc_masks)
                 
                     val_loss_latent = F.mse_loss(out, traj_latents, reduction='mean')
                     total_loss_latent += val_loss_latent * B
 
-                    traj_pred = camera_vae.decode(out * cfg.vae_latent_scale)
+                    if cfg.use_vae:
+                        traj_pred = camera_vae.decode(out * cfg.vae_latent_scale)
+                    else:
+                        traj_pred = out
                     val_loss_traj = F.mse_loss(traj_pred, traj, reduction='mean')
                     total_loss_traj += val_loss_traj * B
                     total_samples += B

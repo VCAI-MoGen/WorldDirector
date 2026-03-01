@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 def offset2batch(offset):
     return (
@@ -120,7 +121,7 @@ def get_ray_sim_per_point(cam_matrix, K, points, c2w=True, device="cuda:0"):
     else:
         c2w = cam_matrix
 
-    H, W = int(K[0, 1, 2]), int(K[0, 0, 2])
+    H, W = int(K[0, 1, 2] * 2) , int(K[0, 0, 2] * 2)
 
     rays_camera = torch.tensor([0.0, 0.0, 1.0])[None].repeat(c2w.shape[0], 1).to(device) # (N, 3)
     rays_world = torch.einsum('nij,nj->ni', c2w[:, :3, :3], rays_camera) # (N, 3)
@@ -138,9 +139,14 @@ def get_ray_sim_per_point(cam_matrix, K, points, c2w=True, device="cuda:0"):
     # Zero sim for invisible points
     masked_sim = torch.zeros_like(cos_sim).to(cos_sim)
     masked_sim[:, visible_indices_unique] = cos_sim[:, visible_indices_unique]
-    cos_sim = masked_sim
+    cos_sim = masked_sim # (N, M)
 
-    ray_sim_per_point = cos_sim.mean(dim=0) # (M, )
+    cos_sim = cos_sim.unsqueeze(0).transpose(1, 2)  # (1, M, 4T+1)
+
+    cos_sim = F.avg_pool1d(cos_sim, kernel_size=3, stride=2, padding=1)  # → (1, M, 2T+1)
+    cos_sim = F.avg_pool1d(cos_sim, kernel_size=3, stride=2, padding=1)  # → (1, M, T+1)
+
+    ray_sim_per_point = cos_sim[0].transpose(0, 1) # (T+1, M) (T=N//4+1)
 
     visibility_in_e0 = torch.zeros(points.shape[0]).to(device)
     visibility_in_e0[visible_indices[0]] = 1.0
