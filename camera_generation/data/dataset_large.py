@@ -212,7 +212,7 @@ class CamDataset(torch.utils.data.Dataset):
             if self.cfg.load_saved_pc_embeds and os.path.exists(pc_embeds_path):
                 scene_embeds_data = torch.load(pc_embeds_path, map_location='cpu')
                 scene_embeds = scene_embeds_data['embed']
-                scene_sim =scene_embeds_data['sim']
+                scene_sim = scene_embeds_data['sim']
 
                 scene_data = None
                 saved_avg_scale_path = os.path.join(os.path.dirname(scene_path), "avg_scale", f"{data_name.split('_')[-1]}.json")
@@ -274,6 +274,7 @@ class CamDataset(torch.utils.data.Dataset):
             data['pc'] = point_obj
         if scene_embeds is not None:
             data['pc_embeds'] = scene_embeds
+            data['pc_sim'] = scene_sim
         
         return data
     

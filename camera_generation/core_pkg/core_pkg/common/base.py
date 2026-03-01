@@ -98,7 +98,11 @@ def collate_fn(batch):
         new_batch = {}
 
         for key in batch[0]:
-            if key == "pc_embeds":
+            if key == 'pc_sim':
+                sim_list = [d[key] for d in batch]
+                sims = pad_sequence(sim_list, batch_first=True)
+                new_batch['pc_sim'] = sims
+            elif key == "pc_embeds":
                 embeds_list = [d[key] for d in batch]   # [(L1,D), (L2,D), ...]
 
                 lengths = [e.shape[0] for e in embeds_list]

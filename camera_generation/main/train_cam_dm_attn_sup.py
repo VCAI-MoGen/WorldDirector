@@ -93,7 +93,7 @@ def train():
     )
 
     trainer = Trainer(cfg=cfg)
-    trainer._make_batch_generator(include_val=False)
+    trainer._make_batch_generator()
     trainer._make_model()
 
     if cfg.sampling_type == "ddpm":
@@ -149,11 +149,8 @@ def train():
 
     global_step = 0
 
-    # model, opt, train_dataloader, valid_dataloader = accelerator.prepare(
-    #     model, opt, trainer.batch_generator, trainer.valid_batch_generator
-    # )
-    model, opt, train_dataloader = accelerator.prepare(
-        model, opt, trainer.batch_generator
+    model, opt, train_dataloader, valid_dataloader = accelerator.prepare(
+        model, opt, trainer.batch_generator, trainer.valid_batch_generator
     )
 
 
@@ -170,12 +167,12 @@ def train():
             data_name = data['data_name']
             text_prompt = data['text_prompt']
             traj = data['cam_param'].to(accelerator.device)
-            extrinsics = data['extrinsics']
-            intrinsics = data['intrinsics']
-            points = data['points']
-            inverse = data['inverse']
+            # extrinsics = data['extrinsics']
+            # intrinsics = data['intrinsics']
+            # points = data['points']
+            # inverse = data['inverse']
 
-            ray_info_list = [get_ray_sim_per_point(w2c, K, scatter_mean(points_single, inv, dim=0), c2w=False, device=device) for w2c, K, points_single, inv in zip(extrinsics, intrinsics, points, inverse)]
+            # ray_info_list = [get_ray_sim_per_point(w2c, K, scatter_mean(points_single, inv, dim=0), c2w=False, device=device) for w2c, K, points_single, inv in zip(extrinsics, intrinsics, points, inverse)]
             B = traj.shape[0]
 
             with torch.no_grad():
@@ -183,20 +180,21 @@ def train():
                     if 'pc' in data:
                         point = data['pc']
                         if cfg.point_encoder != 'custom':
-                            pc_embeds, ray_sims, pc_masks, point_obj = pc_encoder(point, ray_info_list)
-                            target_dir = '/home/ckd248/data/SCVideo/camera_generation/dataset/pc_embeds'
-                            for name, embed, sim, mask in zip(data_name, pc_embeds, ray_sims, pc_masks):
-                                file_path = os.path.join(target_dir, name)
-                                valid_mask = mask > 0
-                                embed_data = {
-                                    "embed": embed[valid_mask].cpu(),
-                                    "sim": sim[valid_mask].cpu(),
-                                }
-                                torch.save(embed_data, file_path)
+                            pc_embeds, ray_sims, pc_masks, point_obj = pc_encoder(point)
+                            # target_dir = '/home/ckd248/data/SCVideo/camera_generation/dataset/pc_embeds'
+                            # for name, embed, sim, mask in zip(data_name, pc_embeds, ray_sims, pc_masks):
+                            #     file_path = os.path.join(target_dir, name)
+                            #     valid_mask = mask > 0
+                            #     embed_data = {
+                            #         "embed": embed[valid_mask].cpu(),
+                            #         "sim": sim[valid_mask].cpu(),
+                            #     }
+                            #     torch.save(embed_data, file_path)
                             continue
                     elif 'pc_embeds' in data:
                         pc_embeds = data['pc_embeds'].to(device)
                         pc_masks = data['pc_masks'].to(device)
+                        pc_sims = data['pc_sim'] # (B, P, T)
                     t2 = time.time()
                     # PC Embeds preprocessing
                     # # print(data_name)
@@ -249,11 +247,19 @@ def train():
             if cfg.model_type == 'baseline_attn_sup':
                 eps = 1e-8
                 _, B, N_c, N_p = point_ca_weights.shape # (N_layer, B, N_c, N_p)
-                ray_sims = ray_sims.squeeze(-1)
-                target = ray_sims.masked_fill(~pc_masks, -1e9)
-                target = F.softmax(target, dim=-1) * pc_masks
-                target = target / (target.sum(dim=-1, keepdim=True) + eps) # (B, N_p)
-                target = target.unsqueeze(1).expand(B, N_c, N_p).unsqueeze(0) # (1, B, N_c, N_p)
+                # ray_sims = ray_sims.squeeze(-1)
+                # target = ray_sims.masked_fill(~pc_masks, -1e9)
+                # target = F.softmax(target, dim=-1) * pc_masks
+                # target = target / (target.sum(dim=-1, keepdim=True) + eps) # (B, N_p)
+                # target = target.unsqueeze(1).expand(B, N_c, N_p).unsqueeze(0) # (1, B, N_c, N_p)
+
+                pc_sims = pc_sims.unsqueeze(0).permute(0, 1, 3, 2) # (1, B, N_c, N_p)
+                masked_sims = pc_sims.masked_fill(
+                    ~pc_masks.unsqueeze(0).unsqueeze(2),
+                    -1e9
+                )
+                target = torch.softmax(masked_sims, dim=-1) * pc_masks.unsqueeze(0).unsqueeze(2)
+                target = target / (target.sum(dim=-1, keepdim=True) + eps) # (1, B, N_c, N_p)
 
                 pred = point_ca_weights * pc_masks.unsqueeze(0).unsqueeze(2)
                 pred = pred / (pred.sum(dim=-1, keepdim=True) + eps)
@@ -331,19 +337,19 @@ def train():
                     scale = data['avg_scale'].to(device)
                     width = data['width'].to(device)
                     height = data['height'].to(device)
-                    extrinsics = data['extrinsics']
-                    intrinsics = data['intrinsics']
-                    points = data['points']
-                    inverse = data['inverse']
+                    # extrinsics = data['extrinsics']
+                    # intrinsics = data['intrinsics']
+                    # points = data['points']
+                    # inverse = data['inverse']
 
-                    ray_info_list = [get_ray_sim_per_point(w2c, K, scatter_mean(points_single, inv, dim=0), device=device) for w2c, K, points_single, inv in zip(extrinsics, intrinsics, points, inverse)]
+                    # ray_info_list = [get_ray_sim_per_point(w2c, K, scatter_mean(points_single, inv, dim=0), device=device) for w2c, K, points_single, inv in zip(extrinsics, intrinsics, points, inverse)]
                     B = traj.shape[0]
 
                     if cfg.load_points:
                         if 'pc' in data:
                             point = data['pc']
                             if cfg.point_encoder != 'custom':
-                                pc_embeds, ray_sims, pc_masks, point_obj = pc_encoder(point, ray_info_list)
+                                pc_embeds, ray_sims, pc_masks, point_obj = pc_encoder(point)
                             else:
                                 pc_embeds, pc_masks, point_obj = model.pc_encoder(point)
                         elif 'pc_embeds' in data:
