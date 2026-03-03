@@ -1,3 +1,6 @@
 dataset/
 !data/
 results*
+main/evaluate/CLaTr/lightning_logs
+main/evaluate/CLaTr/CLaTr_checkpoints
+main/evaluate_temp
