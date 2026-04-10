@@ -2,10 +2,10 @@ import numpy as np
 import torch
 from core_pkg.common.utils.rotation_utils import compute_rotation_matrix_from_ortho6d
 
-SCENE_CUTTING_THRESHOLD = 90
+SCENE_CUTTING_THRESHOLD = 75
 MAX_POINTS = 16_000_000
 
-def normalize_camera_extrinsics_and_points(extrinsics, points=None, avg_scale=None, scene_cutting_threshold=SCENE_CUTTING_THRESHOLD):
+def normalize_camera_extrinsics_and_points(extrinsics, points=None, avg_scale=None, max_trans_norm=False):
     """
     extrinsics: (N, 4, 4) torch.Tensor (w2c)
     points: (M, 3) torch.Tensor
@@ -33,19 +33,19 @@ def normalize_camera_extrinsics_and_points(extrinsics, points=None, avg_scale=No
     if points is not None and avg_scale is None:
         points = points.to(dtype=extrinsics.dtype, device=extrinsics.device)
         new_points = points @ R.T + t
-
         # scale: (1,)
-        avg_scale = new_points.norm(dim=-1).mean().unsqueeze(0)
+        if max_trans_norm:
+            mean_avg_scale = new_points.norm(dim=-1).mean().unsqueeze(0)
+            normalized_points = new_points / mean_avg_scale
+            normalized_extrinsics[:, :3, 3] /= mean_avg_scale
 
-        normalized_points = new_points / avg_scale
+            normalized_c2ws = torch.linalg.inv(normalized_extrinsics)
+            avg_scale = normalized_c2ws[:, :3, 3].norm(dim=-1).max().unsqueeze(0) + 1e-5
+        else:
+            avg_scale = new_points.norm(dim=-1).mean().unsqueeze(0)
+            normalized_points = new_points / avg_scale
         # scene cutting
         d = torch.norm(normalized_points, dim=1)
-        # if normalized_points.shape[0] > MAX_POINTS:
-        #     idx = torch.randperm(normalized_points.shape[0], device=extrinsics.device)[:MAX_POINTS]
-        #     d_sample = d[idx]
-        # else:
-        #     d_sample = d
-        # r = torch.quantile(d_sample, scene_cutting_threshold / 100)
         r = 1.25
         mask = d <= r
     
@@ -53,7 +53,8 @@ def normalize_camera_extrinsics_and_points(extrinsics, points=None, avg_scale=No
 
     return normalized_extrinsics, normalized_points, avg_scale, mask
 
-def out_to_trajectory(out, scale, e0, device=None):
+def out_to_trajectory(out, scale, e0, device=None, max_trans_norm=False):
+
     """
     out: (B, N, 9)
     scale: (B, 1)
@@ -63,11 +64,17 @@ def out_to_trajectory(out, scale, e0, device=None):
     """
     if device is None:
         device = out.device
+    if max_trans_norm:
+        max_trans_scale = out[:, -1, 0:1]
     if out.shape[-1] > 9:
         out = out[:, :, :9]
     matrix_trajectory = torch.eye(4, device=device)[None].repeat(out.shape[1], 1, 1)[None].repeat(out.shape[0], 1, 1, 1)
 
-    raw_trans = out[:, :, 6:] * scale.unsqueeze(-1)
+    if max_trans_norm:
+        # raw_trans = out[:, :, 6:] * scale.unsqueeze(-1) * max_trans_scale.exp().unsqueeze(-1)
+        raw_trans = out[:, :, 6:] * scale.unsqueeze(-1) * max_trans_scale.unsqueeze(-1)
+    else:
+        raw_trans = out[:, :, 6:] * scale.unsqueeze(-1)
     matrix_trajectory[:, :, :3, 3] = raw_trans
 
     rot6d = out[:, :, :6]
@@ -78,7 +85,7 @@ def out_to_trajectory(out, scale, e0, device=None):
 
     return matrix_trajectory
 
-def make_intrinsics(fx_fy, width, height):
+def make_intrinsics(fx_fy, width, height, intrinsics=None):
     """
     fx_fy:   (B, N, 2)
     width:   (B, N)
@@ -92,8 +99,12 @@ def make_intrinsics(fx_fy, width, height):
     device = fx_fy.device
     dtype = fx_fy.dtype
 
-    fx = fx_fy[..., 0] * width
-    fy = fx_fy[..., 1] * height
+    if intrinsics is None:
+        fx = fx_fy[..., 0] * width
+        fy = fx_fy[..., 1] * height
+    else:
+        fx = fx_fy[..., 0] * intrinsics[..., 0, 0]
+        fy = fx_fy[..., 1] * intrinsics[..., 1, 1]
 
     cx = width * 0.5
     cy = height * 0.5

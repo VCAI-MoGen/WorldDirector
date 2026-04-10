@@ -89,7 +89,7 @@ class CameraDiffusionModel(nn.Module):
         hidden_dim=512,
         num_layers=8,
         num_heads=8,
-        point_dim=769,
+        point_dim=772,
         text_dim=4096,
         dropout=0.1,
         pc_encoder=None,
@@ -129,6 +129,10 @@ class CameraDiffusionModel(nn.Module):
         self.pc_encoder = pc_encoder
 
     def forward(self, x_t, t, text_emb, text_mask, point_emb=None, point_mask=None):
+
+        self.text_cross_attn_weight = None
+        self.point_cross_attn_weight = None
+
         B, T, _ = x_t.shape
 
         device = x_t.device
@@ -172,18 +176,18 @@ class CameraDiffusionModel(nn.Module):
             h = mlp2(h) + h
 
             cross_attn_list.append(point_cross_attn.attn_weight)
-            # if self.training is False:
-            #     if self.text_cross_attn_weight is None:
-            #         self.text_cross_attn_weight = text_cross_attn.attn_weight
-            #         self.point_cross_attn_weight = point_cross_attn.attn_weight
-            #     else:
-            #         self.text_cross_attn_weight += text_cross_attn.attn_weight
-            #         self.point_cross_attn_weight += point_cross_attn.attn_weight
+            if self.training is False:
+                if self.text_cross_attn_weight is None:
+                    self.text_cross_attn_weight = text_cross_attn.attn_weight
+                    self.point_cross_attn_weight = point_cross_attn.attn_weight
+                else:
+                    self.text_cross_attn_weight += text_cross_attn.attn_weight
+                    self.point_cross_attn_weight += point_cross_attn.attn_weight
             
             
-        # if self.training is False:
-        #     self.text_cross_attn_weight /= len(self.layers)
-        #     self.point_cross_attn_weight /= len(self.layers)
+        if self.training is False:
+            self.text_cross_attn_weight /= len(self.layers)
+            self.point_cross_attn_weight /= len(self.layers)
 
         h = h[:, :T, :]
         cross_attn = torch.stack(cross_attn_list)

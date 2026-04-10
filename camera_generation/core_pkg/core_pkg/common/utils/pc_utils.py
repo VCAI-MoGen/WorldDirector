@@ -1,5 +1,18 @@
 import torch
 import torch.nn.functional as F
+import trimesh
+import numpy as np
+
+def load_ply_as_pointcloud(path):
+    mesh = trimesh.load(path)
+    points = mesh.vertices
+    if hasattr(mesh, 'visual') and hasattr(mesh.visual, 'vertex_colors'):
+        colors = mesh.visual.vertex_colors[:, :3] / 255.0  # (N, 4) - RGBA uint8
+    else:
+        colors = np.ones_like(points)
+    colors = np.clip(colors, 0.0, 1.0)
+    pc = np.hstack([points, colors])
+    return pc.astype(np.float32)
 
 def offset2batch(offset):
     return (
@@ -137,7 +150,8 @@ def get_ray_sim_per_point(cam_matrix, K, points, c2w=True, device="cuda:0"):
     visible_indices_unique = torch.unique(torch.cat(visible_indices, dim=0))
 
     # Zero sim for invisible points
-    masked_sim = torch.zeros_like(cos_sim).to(cos_sim)
+    cos_sim = cos_sim / 0.1
+    masked_sim = torch.zeros_like(cos_sim).to(cos_sim) - 1e9
     masked_sim[:, visible_indices_unique] = cos_sim[:, visible_indices_unique]
     cos_sim = masked_sim # (N, M)
 

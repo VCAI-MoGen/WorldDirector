@@ -89,7 +89,7 @@ class CameraDiffusionModel(nn.Module):
         hidden_dim=512,
         num_layers=8,
         num_heads=8,
-        point_dim=769,
+        point_dim=772,
         text_dim=4096,
         dropout=0.1,
         pc_encoder=None,
@@ -129,6 +129,12 @@ class CameraDiffusionModel(nn.Module):
         self.pc_encoder = pc_encoder
 
     def forward(self, x_t, t, text_emb, text_mask, point_emb=None, point_mask=None):
+        self.text_cross_attn_weight = None
+        if point_emb is None:
+            has_point = False
+        else:
+            has_point = True
+            self.point_cross_attn_weight = None
         B, T, _ = x_t.shape
 
         device = x_t.device
@@ -144,8 +150,9 @@ class CameraDiffusionModel(nn.Module):
         text_tok = self.text_proj(text_emb)
         text_tok = positional_encoding(text_tok.shape[-2], text_tok.shape[-1], device=device).unsqueeze(0).expand(B, -1, -1)
 
-        point_tok = self.point_proj(point_emb)
-        point_tok = point_tok * point_mask.unsqueeze(-1)
+        if has_point:
+            point_tok = self.point_proj(point_emb)
+            point_tok = point_tok * point_mask.unsqueeze(-1)
 
         for norm1, self_attn, text_cross_attn, mlp1, norm2, point_cross_attn, mlp2 in self.layers:
 
@@ -160,28 +167,32 @@ class CameraDiffusionModel(nn.Module):
             h = text_cross_attn(h, text_tok, key_padding_mask=~text_mask)
             h = mlp1(h) + h
 
-            scale2, shift2 = self.mod2(t_embed).chunk(2, dim=-1)
-            scale2 = scale2.unsqueeze(1)  # (B,1,D)
-            shift2 = shift2.unsqueeze(1)
-            
-            h = norm2(h)
-            h = h * (1 + scale2) + shift2
+            if has_point:
+                scale2, shift2 = self.mod2(t_embed).chunk(2, dim=-1)
+                scale2 = scale2.unsqueeze(1)  # (B,1,D)
+                shift2 = shift2.unsqueeze(1)
+                
+                h = norm2(h)
+                h = h * (1 + scale2) + shift2
 
-            h = point_cross_attn(h, point_tok, key_padding_mask=~point_mask)
-            h = mlp2(h) + h
+                h = point_cross_attn(h, point_tok, key_padding_mask=~point_mask)
+                h = mlp2(h) + h
 
-            # if self.training is False:
-            #     if self.text_cross_attn_weight is None:
-            #         self.text_cross_attn_weight = text_cross_attn.attn_weight
-            #         self.point_cross_attn_weight = point_cross_attn.attn_weight
-            #     else:
-            #         self.text_cross_attn_weight += text_cross_attn.attn_weight
-            #         self.point_cross_attn_weight += point_cross_attn.attn_weight
+            if self.training is False:
+                if self.text_cross_attn_weight is None:
+                    self.text_cross_attn_weight = text_cross_attn.attn_weight
+                    if has_point:
+                        self.point_cross_attn_weight = point_cross_attn.attn_weight
+                else:
+                    self.text_cross_attn_weight += text_cross_attn.attn_weight
+                    if has_point:
+                        self.point_cross_attn_weight += point_cross_attn.attn_weight
             
             
-        # if self.training is False:
-        #     self.text_cross_attn_weight /= len(self.layers)
-        #     self.point_cross_attn_weight /= len(self.layers)
+        if self.training is False:
+            self.text_cross_attn_weight /= len(self.layers)
+            if has_point:
+                self.point_cross_attn_weight /= len(self.layers)
 
         h = h[:, :T, :]
         return self.out(h)# (B, T, 9)

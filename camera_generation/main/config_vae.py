@@ -19,8 +19,8 @@ def build_dataset_dir_list():
     dp_dataset_dir_list = [os.path.join(dynpose_data_path, scene_type) for scene_type in sorted(os.listdir(dynpose_data_path))]
     dataset_dir_list += dp_dataset_dir_list
 
-    datadop_dir_list = ['/home/ckd248/data/SCVideo/camera_generation/tools/GenDoP/DataDoP/ours']
-    dataset_dir_list += datadop_dir_list
+    # datadop_dir_list = ['/home/ckd248/data/SCVideo/camera_generation/tools/GenDoP/DataDoP/ours']
+    # dataset_dir_list += datadop_dir_list
 
     # dataset_dir_list = dataset_dir_list[0:1]
 
@@ -28,7 +28,7 @@ def build_dataset_dir_list():
 
 class Config:
 
-    exp_name = 'vae'
+    exp_name = 'dl3dv+dv'
 
     # Path
     cur_dir = osp.dirname(os.path.abspath(__file__))
@@ -36,17 +36,19 @@ class Config:
     data_dir = osp.join(root_dir, 'data')
     dataset_dir_list = build_dataset_dir_list()
     val_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260226_082914_cross_attn/ckpts/600.pth'
+    embed_path = '/home/ckd248/data/SCVideo/camera_generation/dataset/pc_embeds_datadop'
     random_seed = 42
 
     # Training
-    lr = 1e-4
-    batch_size = 256
+    lr = 1e-3
+    batch_size = 512
     accum_steps = 1
     epochs = 2000
     save_epoch = 50
     sample_data = None
     load_points = False
     load_saved_pc_embeds = False
+    max_trans_norm = False
 
     # Diffusion
     model_type = 'baseline' # ['baseline', 'director', 'baseline_mmdit]
@@ -63,8 +65,32 @@ class Config:
 
     # VAE
     vae_beta = 1e-3
-    vae_latent_scale = 0.4467666
-    vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260202_065659/ckpts/400.pth'
+    # vae_latent_scale = 0.4467666
+    vae_latent_scale = 0.96032625
+    vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260302/300.pth'
+    # # target: datadp norm: gendop
+    # vae_latent_scale = 0.513456
+    # vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260309_064024/ckpts/500.pth'
+    # # # target: worldtraj norm: gendop
+    # vae_latent_scale = 0.53829
+    # vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260309_053143/ckpts/250.pth'
+    # target: worlrdtraj norm: ours
+    # vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260307_035047/ckpts/350.pth'
+    # target: datadop norm: ours
+    # vae_latent_scale = 0.45017
+    # vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260310_133840/ckpts/550.pth'
+    # dl3dv7K vae
+    vae_latent_scale = 0.472981
+    vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260316_073439_dl3dv_7K/ckpts/1900.pth'
+    # dv vae
+    vae_latent_scale = 0.45341
+    vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260316_073511_dv/ckpts/1000.pth'
+    # dl3dv+dv vae
+    vae_latent_scale = 0.453496
+    vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260316_073543_dl3dv+dv/ckpts/700.pth'
+
+    # 64, 5e-3
+    # vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260310_064050/ckpts/150.pth'
 
     num_gpus = 1
     num_thread = 4

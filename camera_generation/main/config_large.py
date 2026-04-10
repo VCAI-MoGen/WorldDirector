@@ -3,6 +3,7 @@ import os.path as osp
 import sys
 import torch
 import random
+import numpy as np
 
 def build_dataset_dir_list():
     dataset_dir_list = []
@@ -16,27 +17,33 @@ def build_dataset_dir_list():
     dataset_dir_list += dv_dataset_dir_list
 
     dynpose_data_path = '/data1/cympyc1785/SceneData/DynamicVerse/scenes/dynpose-100k'
-    dp_dataset_dir_list = [os.path.join(dynpose_data_path, scene_type) for scene_type in sorted(os.listdir(dynpose_data_path))][:31]
+    dp_dataset_dir_list = [os.path.join(dynpose_data_path, scene_type) for scene_type in sorted(os.listdir(dynpose_data_path))]
     dataset_dir_list += dp_dataset_dir_list
 
     # datadop_dir_list = ['/home/ckd248/data/SCVideo/camera_generation/tools/GenDoP/DataDoP/ours']
     # dataset_dir_list += datadop_dir_list
 
-    # dataset_dir_list = dataset_dir_list[0:1]
+    # dataset_dir_list = dataset_dir_list[2:3]
 
     return dataset_dir_list
 
 class Config:
 
-    exp_name = 'wo_vae_w_bin_wo_attnloss'
+    # exp_name = 'w_vae_w_bin_w_attnloss'
+    exp_name = 'all_long'
+    # exp_name = 'w_vae_w_bin_w_attnloss_wo_coord'
 
     # Path
     cur_dir = osp.dirname(os.path.abspath(__file__))
     root_dir = osp.join(cur_dir, '..')
     data_dir = osp.join(root_dir, 'data')
     dataset_dir_list = build_dataset_dir_list()
-    val_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260226_082914_cross_attn/ckpts/600.pth'
-    embed_path = '/home/ckd248/data/SCVideo/camera_generation/dataset/pc_embeds'
+    val_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260310_092203_gendop_norm_on_datadop/ckpts/150.pth'
+    val_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results/20260403_064107_all_long/ckpts/250.pth'
+    # load_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260309_123026_gendop_norm_on_datadop/ckpts/150.pth'
+    load_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results/20260403_064107_all_long/ckpts/275.pth'
+    # embed_path = '/home/ckd248/data/SCVideo/camera_generation/dataset/pc_embeds_datadop'
+    embed_path = '/home/ckd248/data/SCVideo/camera_generation/dataset/pc_embeds_inv'
     random_seed = 42
 
     # Training
@@ -44,14 +51,15 @@ class Config:
     batch_size = 32
     accum_steps = 1
     epochs = 2000
-    save_epoch = 50
-    sample_data = 25000
+    save_epoch = 25
+    sample_data = None
     load_points = True
     load_saved_pc_embeds = True
     attn_loss_weight = 1e-2
+    max_trans_norm = False
 
     # Diffusion
-    model_type = 'baseline' # ['baseline', 'director', 'baseline_mmdit', 'baseline_attn_sup']
+    model_type = 'baseline_attn_sup' # ['baseline', 'director', 'baseline_mmdit', 'baseline_attn_sup']
     sampling_type = 'ddim'
     diffusion_max_step = 1000
     diffusion_inference_step = 50
@@ -64,7 +72,7 @@ class Config:
     steps_offset = 1
 
     # VAE
-    use_vae = False
+    use_vae = True
     if use_vae:
         num_cam = 13
         cam_dim = 64
@@ -72,8 +80,31 @@ class Config:
         num_cam = 49
         cam_dim = 11
     vae_beta = 1e-3
-    vae_latent_scale = 0.4467666
-    vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260202_065659/ckpts/400.pth'
+    vae_latent_scale = 0.96032625
+    vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260302/300.pth'
+    # target: datadp norm: gendop
+    # vae_latent_scale = 0.513456
+    # vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260309_064024/ckpts/500.pth'
+    # target: worldtraj norm: gendop
+    # vae_latent_scale = 0.53829
+    # vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260309_053143/ckpts/250.pth'
+    # # target: worlrdtraj norm: ours
+    # vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260307_035047/ckpts/350.pth'
+    # target: datadop norm: ours
+    # vae_latent_scale = 0.45017
+    # vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260310_133840/ckpts/550.pth'
+    # dl3dv7K vae
+    # vae_latent_scale = 0.472981
+    # vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260316_073439_dl3dv_7K/ckpts/1900.pth'
+    # dv vae
+    # vae_latent_scale = 0.45341
+    # vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260316_073511_dv/ckpts/1000.pth'
+    # dl3dv+dv vae
+    # vae_latent_scale = 0.453496
+    # vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260316_073543_dl3dv+dv/ckpts/700.pth'
+    # # old
+    # vae_latent_scale = 0.4467666
+    # vae_ckpt_path = "/data2/ckd248/SCVideo/camera_generation/results_vae/20260202_065659/ckpts/400.pth"
 
     num_gpus = 1
     num_thread = 4
@@ -98,7 +129,8 @@ class Config:
 
     # clatr_ckpt_path = 'CLaTr_checkpoints/epoch99_directorial.ckpt'
     clatr_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/main/evaluate/CLaTr/CLaTr_checkpoints/epoch139_large.ckpt'
-    # clatr_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/main/evaluate/CLaTr/CLaTr_checkpoints/epoch89_dl3dv_seg_kl_1e-8.ckpt'
+    # clatr_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/main/evaluate/CLaTr/CLaTr_checkpoints/epoch159_trans_norm_scene_text.ckpt'
+    # clatr_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/main/evaluate/CLaTr/CLaTr_checkpoints/epoch179_trans_norm_camera_text.ckpt'
 
 cfg = Config()
 cfg_dict = {
@@ -108,3 +140,11 @@ cfg_dict = {
 
 from core_pkg.common.utils.dir import add_pypath, make_folder
 add_pypath(osp.join(cfg.data_dir))
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+set_seed(cfg.random_seed)

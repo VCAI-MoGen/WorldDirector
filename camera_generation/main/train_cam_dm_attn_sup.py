@@ -29,7 +29,7 @@ np.random.seed(cfg.random_seed)
 random.seed(cfg.random_seed)
 
 if cfg.model_type == 'baseline':
-    from core_pkg.models.camera_diffusion_model import CameraDiffusionModel
+    from core_pkg.models.camera_diffusion_model_base import CameraDiffusionModel
 if cfg.model_type == 'director':
     from core_pkg.models.camera_diffusion_model_director import CameraDiffusionModel
 if cfg.model_type == 'baseline_mmdit':
@@ -136,11 +136,14 @@ def train():
         model = CameraDiffusionModel(cam_dim=cfg.cam_dim)
     else:
         model = CameraDiffusionModel(cam_dim=cfg.cam_dim, pc_encoder=pc_encoder)
+    if cfg.load_ckpt_path is not None:
+        ckpt = torch.load(cfg.load_ckpt_path, map_location=device)
+        model.load_state_dict(ckpt)
     
     model.train()
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
 
-    camera_vae = CameraVAE().to(device)
+    camera_vae = CameraVAE(latent_dim=cfg.cam_dim).to(device)
     camera_vae.load_state_dict(torch.load(cfg.vae_ckpt_path, map_location=device))
     camera_vae.eval()
 
@@ -172,7 +175,6 @@ def train():
             # points = data['points']
             # inverse = data['inverse']
 
-            # ray_info_list = [get_ray_sim_per_point(w2c, K, scatter_mean(points_single, inv, dim=0), c2w=False, device=device) for w2c, K, points_single, inv in zip(extrinsics, intrinsics, points, inverse)]
             B = traj.shape[0]
 
             with torch.no_grad():
@@ -180,17 +182,25 @@ def train():
                     if 'pc' in data:
                         point = data['pc']
                         if cfg.point_encoder != 'custom':
-                            pc_embeds, ray_sims, pc_masks, point_obj = pc_encoder(point)
-                            # target_dir = '/home/ckd248/data/SCVideo/camera_generation/dataset/pc_embeds'
-                            # for name, embed, sim, mask in zip(data_name, pc_embeds, ray_sims, pc_masks):
+                            ray_info_list = [get_ray_sim_per_point(w2c, K, scatter_mean(points_single, inv, dim=0), c2w=False, device=device) for w2c, K, points_single, inv in zip(extrinsics, intrinsics, points, inverse)]
+                            pc_embeds, ray_sims, p2v_map_list, pc_masks, point_obj = pc_encoder(point, ray_info_list)
+                            # target_dir = '/home/ckd248/data/SCVideo/camera_generation/dataset/pc_embeds_inv'
+                            # for name, embed, sim, mask, p2v_map, inv, points_single, points_mask in zip(data_name, pc_embeds, ray_sims, pc_masks, p2v_map_list, inverse, points, data['points_mask']):
                             #     file_path = os.path.join(target_dir, name)
                             #     valid_mask = mask > 0
+                            #     p2v_map = p2v_map[inv]
+                            #     voxel_coord = scatter_mean(points_single, p2v_map, dim=0) # (V, 3)
+                            #     # print(voxel_coord.shape)
+                            #     embed_combined = embed[valid_mask] # (V, D)
+                            #     embed_combined = torch.cat([voxel_coord, embed_combined], dim=-1)
                             #     embed_data = {
-                            #         "embed": embed[valid_mask].cpu(),
+                            #         "embed": embed_combined.cpu(),
                             #         "sim": sim[valid_mask].cpu(),
+                            #         "p2v_map": p2v_map.cpu(),
+                            #         "mask": points_mask.cpu()
                             #     }
                             #     torch.save(embed_data, file_path)
-                            continue
+                            # continue
                     elif 'pc_embeds' in data:
                         pc_embeds = data['pc_embeds'].to(device)
                         pc_masks = data['pc_masks'].to(device)
@@ -273,6 +283,8 @@ def train():
                 kl_loss = kl_loss * pc_masks.unsqueeze(0).unsqueeze(2)
                 kl_loss = kl_loss.sum(dim=-1).mean()
                 loss += cfg.attn_loss_weight * kl_loss
+            else:
+                kl_loss = torch.tensor(0.0).to(device)
                 
             t4 = time.time()
             accelerator.backward(loss)
@@ -376,13 +388,17 @@ def train():
                     total_loss_traj += val_loss_traj * B
                     total_samples += B
 
-                    ref_intrinsics = make_intrinsics(traj[:, :, -2:], width, height).cpu().tolist()
-                    pred_intrinsics = make_intrinsics(traj_pred[:, :, -2:], width, height).cpu().tolist()
+                    if cfg.max_trans_norm:
+                        ref_intrinsics = make_intrinsics(traj[:, :-1, -2:], width, height).cpu().tolist()
+                        pred_intrinsics = make_intrinsics(traj_pred[:, :-1, -2:], width, height).cpu().tolist()
+                    else:
+                        ref_intrinsics = make_intrinsics(traj[:, :, -2:], width, height).cpu().tolist()
+                        pred_intrinsics = make_intrinsics(traj_pred[:, :, -2:], width, height).cpu().tolist()
                     width = width.cpu().tolist()
                     height = height.tolist()
-
-                    traj = out_to_trajectory(traj, scale, E0, device)
-                    traj_pred = out_to_trajectory(traj_pred, scale, E0, device)
+                    
+                    traj = out_to_trajectory(traj, scale, E0, device, max_trans_norm=cfg.max_trans_norm)
+                    traj_pred = out_to_trajectory(traj_pred, scale, E0, device, max_trans_norm=cfg.max_trans_norm)
                     matrix_traj_ref = inverse_camera_matrix(traj)
                     matrix_traj_pred = inverse_camera_matrix(traj_pred)
                     matrix_traj_ref[:, :, :3, 1:3] *= -1

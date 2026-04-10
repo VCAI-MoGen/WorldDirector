@@ -122,7 +122,7 @@ class PCEncoder(nn.Module):
             feat = point.feat
         return feat, point, ret_attention
 
-    def forward(self, point_obj, ray_info_list):
+    def forward(self, point_obj, ray_info_list=None):
         """
         ray_info_list = List of (ray_sim, visibility in first camera)
         """
@@ -158,4 +158,5 @@ class PCEncoder(nn.Module):
         masks = torch.arange(pc_embeds.shape[1])[None, :] < lengths[:, None]
         masks = masks.to(pc_embeds).bool()
 
-        return pc_embeds, ray_sims, masks, point # (B, M, 768), (B, M, 1), (B, M), Point
+        return pc_embeds, ray_sims, p2v_map_list, masks, point # (B, M, 768), (B, M, 1), (B, M), Point
+        return pc_embeds, masks, point # (B, M, 768), (B, M, 1), (B, M), Point
