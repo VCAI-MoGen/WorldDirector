@@ -50,36 +50,36 @@ class Trainer(Base):
     def _make_batch_generator(self, include_train=True, include_val=True):
         # data load and construct batch generator
 
-        test_set_path = '/home/ckd248/data/SCVideo/camera_generation/main/test_data_final.txt'
-        with open(test_set_path, 'r') as f:
-            test_set_list = list(f.readlines())
-            test_set_list = ['_'.join(x.strip().split('/')[-3:]) for x in test_set_list]
-        train_set_path = '/home/ckd248/data/SCVideo/camera_generation/main/train_data_final.txt'
-        with open(train_set_path, 'r') as f:
-            train_set_list = list(f.readlines())
-            train_set_list = ['_'.join(x.strip().split('/')[-3:]) for x in train_set_list]
+        # test_set_path = '/home/ckd248/data/SCVideo/camera_generation/main/test_data_final.txt'
+        # with open(test_set_path, 'r') as f:
+        #     test_set_list = list(f.readlines())
+        #     test_set_list = ['_'.join(x.strip().split('/')[-3:]) for x in test_set_list]
+        # train_set_path = '/home/ckd248/data/SCVideo/camera_generation/main/train_data_final.txt'
+        # with open(train_set_path, 'r') as f:
+        #     train_set_list = list(f.readlines())
+        #     train_set_list = ['_'.join(x.strip().split('/')[-3:]) for x in train_set_list]
         
-        if include_train:
-            self.trainset_loader = CamDataset(cfg=self.cfg, target_list=train_set_list)
-            print(self.trainset_loader.__len__())
-        if include_val:
-            self.validset_loader = CamDataset(cfg=self.cfg, target_list=test_set_list)
-            print(self.validset_loader.__len__())
+        # if include_train:
+        #     self.trainset_loader = CamDataset(cfg=self.cfg, target_list=train_set_list)
+        #     print(self.trainset_loader.__len__())
+        # if include_val:
+        #     self.validset_loader = CamDataset(cfg=self.cfg, target_list=test_set_list)
+        #     print(self.validset_loader.__len__())
         
-        # generator = torch.Generator().manual_seed(self.cfg.random_seed)
+        generator = torch.Generator().manual_seed(self.cfg.random_seed)
 
-        # dataset = CamDataset(cfg=self.cfg)
-        # train_size = int(0.9 * len(dataset))
-        # test_size = len(dataset) - train_size
-        # # test_size = len(dataset)
-        # # train_size = 0
-        # # test_size = 0
-        # # train_size = len(dataset)
-        # self.trainset_loader, self.validset_loader = random_split(
-        #     dataset,
-        #     [train_size, test_size],
-        #     generator=generator
-        # )
+        dataset = CamDataset(cfg=self.cfg)
+        train_size = int(0.9 * len(dataset))
+        test_size = len(dataset) - train_size
+        # test_size = len(dataset)
+        # train_size = 0
+        # test_size = 0
+        # train_size = len(dataset)
+        self.trainset_loader, self.validset_loader = random_split(
+            dataset,
+            [train_size, test_size],
+            generator=generator
+        )
 
         if include_train:
             self.batch_generator = DataLoader(dataset=self.trainset_loader, \
