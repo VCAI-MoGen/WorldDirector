@@ -8,20 +8,20 @@ import numpy as np
 def build_dataset_dir_list():
     dataset_dir_list = []
 
-    # dl3dv_data_path = '/data1/cympyc1785/SceneData/DL3DV/scenes'
-    # dl3dv_dataset_dir_list = [os.path.join(dl3dv_data_path, scene_type) for scene_type in sorted(os.listdir(dl3dv_data_path))]
-    # dataset_dir_list += dl3dv_dataset_dir_list
+    dl3dv_data_path = '/data1/cympyc1785/SceneData/DL3DV/scenes'
+    dl3dv_dataset_dir_list = [os.path.join(dl3dv_data_path, scene_type) for scene_type in sorted(os.listdir(dl3dv_data_path))]
+    dataset_dir_list += dl3dv_dataset_dir_list
 
-    # dynamicverse_data_path = '/data1/cympyc1785/SceneData/DynamicVerse/scenes'
-    # dv_dataset_dir_list = [os.path.join(dynamicverse_data_path, scene_type) for scene_type in sorted(os.listdir(dynamicverse_data_path)) if 'dynpose' not in scene_type]
-    # dataset_dir_list += dv_dataset_dir_list
+    dynamicverse_data_path = '/data1/cympyc1785/SceneData/DynamicVerse/scenes'
+    dv_dataset_dir_list = [os.path.join(dynamicverse_data_path, scene_type) for scene_type in sorted(os.listdir(dynamicverse_data_path)) if 'dynpose' not in scene_type]
+    dataset_dir_list += dv_dataset_dir_list
 
-    # dynpose_data_path = '/data1/cympyc1785/SceneData/DynamicVerse/scenes/dynpose-100k'
-    # dp_dataset_dir_list = [os.path.join(dynpose_data_path, scene_type) for scene_type in sorted(os.listdir(dynpose_data_path))]
-    # dataset_dir_list += dp_dataset_dir_list
+    dynpose_data_path = '/data1/cympyc1785/SceneData/DynamicVerse/scenes/dynpose-100k'
+    dp_dataset_dir_list = [os.path.join(dynpose_data_path, scene_type) for scene_type in sorted(os.listdir(dynpose_data_path))]
+    dataset_dir_list += dp_dataset_dir_list
 
-    datadop_dir_list = ['/home/ckd248/data/SCVideo/camera_generation/tools/GenDoP/DataDoP/ours']
-    dataset_dir_list += datadop_dir_list
+    # datadop_dir_list = ['/home/ckd248/data/SCVideo/camera_generation/tools/GenDoP/DataDoP/ours']
+    # dataset_dir_list += datadop_dir_list
 
     # dataset_dir_list = dataset_dir_list[2:3]
 
@@ -30,7 +30,7 @@ def build_dataset_dir_list():
 class Config:
 
     # exp_name = 'w_vae_w_bin_w_attnloss'
-    exp_name = 'datadop_text_w_max_trans_norm'
+    exp_name = 'ablation_w_world_w_tgg_w_vae'
     # exp_name = 'w_vae_w_bin_w_attnloss_wo_coord'
 
     # Path
@@ -39,7 +39,7 @@ class Config:
     data_dir = osp.join(root_dir, 'data')
     dataset_dir_list = build_dataset_dir_list()
     val_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260310_092203_gendop_norm_on_datadop/ckpts/150.pth'
-    val_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results/20260423_053643_datadop_text_wo_scale_norm/ckpts/300.pth'
+    val_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results/20260429_070737_all/ckpts/225.pth'
     # load_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results/20260309_123026_gendop_norm_on_datadop/ckpts/150.pth'
     # load_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results/20260403_064107_all_long/ckpts/275.pth'
     load_ckpt_path = None
@@ -53,14 +53,14 @@ class Config:
     accum_steps = 1
     epochs = 2000
     save_epoch = 25
-    sample_data = None
-    load_points = False
-    load_saved_pc_embeds = False
+    sample_data = 33980
+    load_points = True
+    load_saved_pc_embeds = True
     attn_loss_weight = 1e-2
-    max_trans_norm = True
+    max_trans_norm = False
 
     # Diffusion
-    model_type = 'baseline' # ['baseline', 'director', 'baseline_mmdit', 'baseline_attn_sup']
+    model_type = 'baseline_attn_sup' # ['baseline', 'director', 'baseline_mmdit', 'baseline_attn_sup']
     sampling_type = 'ddim'
     diffusion_max_step = 1000
     diffusion_inference_step = 50
@@ -106,9 +106,13 @@ class Config:
     # # old
     # vae_latent_scale = 0.4467666
     # vae_ckpt_path = "/data2/ckd248/SCVideo/camera_generation/results_vae/20260202_065659/ckpts/400.pth"
-    # datadop wo scale norm
-    vae_latent_scale = 0.42653
-    vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260423_022113_datadop_wo_scale_norm/ckpts/300.pth'
+    # # datadop wo scale norm
+    # vae_latent_scale = 0.42653
+    # vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260423_022113_datadop_wo_scale_norm/ckpts/300.pth'
+    # datadop w max trans norm
+    # vae_latent_scale = 0.502852
+    # vae_latent_scale = 0.8653976
+    # vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260424_062842_datadop_text_w_max_trans_norm/ckpts/400.pth'
 
     num_gpus = 1
     num_thread = 4

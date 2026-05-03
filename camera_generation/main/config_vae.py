@@ -7,20 +7,20 @@ import random
 def build_dataset_dir_list():
     dataset_dir_list = []
 
-    # dl3dv_data_path = '/data1/cympyc1785/SceneData/DL3DV/scenes'
-    # dl3dv_dataset_dir_list = [os.path.join(dl3dv_data_path, scene_type) for scene_type in sorted(os.listdir(dl3dv_data_path))]
-    # dataset_dir_list += dl3dv_dataset_dir_list
+    dl3dv_data_path = '/data1/cympyc1785/SceneData/DL3DV/scenes'
+    dl3dv_dataset_dir_list = [os.path.join(dl3dv_data_path, scene_type) for scene_type in sorted(os.listdir(dl3dv_data_path))]
+    dataset_dir_list += dl3dv_dataset_dir_list
 
-    # dynamicverse_data_path = '/data1/cympyc1785/SceneData/DynamicVerse/scenes'
-    # dv_dataset_dir_list = [os.path.join(dynamicverse_data_path, scene_type) for scene_type in sorted(os.listdir(dynamicverse_data_path)) if 'dynpose' not in scene_type]
-    # dataset_dir_list += dv_dataset_dir_list
+    dynamicverse_data_path = '/data1/cympyc1785/SceneData/DynamicVerse/scenes'
+    dv_dataset_dir_list = [os.path.join(dynamicverse_data_path, scene_type) for scene_type in sorted(os.listdir(dynamicverse_data_path)) if 'dynpose' not in scene_type]
+    dataset_dir_list += dv_dataset_dir_list
 
-    # dynpose_data_path = '/data1/cympyc1785/SceneData/DynamicVerse/scenes/dynpose-100k'
-    # dp_dataset_dir_list = [os.path.join(dynpose_data_path, scene_type) for scene_type in sorted(os.listdir(dynpose_data_path))]
-    # dataset_dir_list += dp_dataset_dir_list
+    dynpose_data_path = '/data1/cympyc1785/SceneData/DynamicVerse/scenes/dynpose-100k'
+    dp_dataset_dir_list = [os.path.join(dynpose_data_path, scene_type) for scene_type in sorted(os.listdir(dynpose_data_path))]
+    dataset_dir_list += dp_dataset_dir_list
 
-    datadop_dir_list = ['/home/ckd248/data/SCVideo/camera_generation/tools/GenDoP/DataDoP/ours']
-    dataset_dir_list += datadop_dir_list
+    # datadop_dir_list = ['/home/ckd248/data/SCVideo/camera_generation/tools/GenDoP/DataDoP/ours']
+    # dataset_dir_list += datadop_dir_list
 
     # dataset_dir_list = dataset_dir_list[0:1]
 
@@ -28,7 +28,7 @@ def build_dataset_dir_list():
 
 class Config:
 
-    exp_name = 'datadop_wo_scale_norm'
+    exp_name = 'cam_vla'
 
     # Path
     cur_dir = osp.dirname(os.path.abspath(__file__))
@@ -91,13 +91,22 @@ class Config:
     # datadop wo scale norm
     vae_latent_scale = 0.42653
     vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260423_022113_datadop_wo_scale_norm/ckpts/300.pth'
+    # datadop w max trans norm
+    vae_latent_scale = 0.502852
+    vae_latent_scale = 0.8653976
+
+    # VLA
+    vae_latent_scale = 0.944445
+    vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260424_062842_datadop_text_w_max_trans_norm/ckpts/400.pth'
+
+    vae_ckpt_path = '/data2/ckd248/SCVideo/camera_generation/results_vae/20260428_070011_cam_vla/ckpts/100.pth'
 
     # 64, 5e-3
     # vae_ckpt_path = '/home/ckd248/data/SCVideo/camera_generation/results_vae/20260310_064050/ckpts/150.pth'
 
     num_gpus = 1
     num_thread = 4
-    num_frames = 49
+    num_frames = 48
 
     # Text encoder
     text_encoder = 'T5' # ['T5', 'CLIP']

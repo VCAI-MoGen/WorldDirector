@@ -350,7 +350,7 @@ def train():
                     width = data['width'].to(device)
                     height = data['height'].to(device)
                     # extrinsics = data['extrinsics']
-                    # intrinsics = data['intrinsics']
+                    intrinsics = data['intrinsics']
                     # points = data['points']
                     # inverse = data['inverse']
 
@@ -389,11 +389,11 @@ def train():
                     total_samples += B
 
                     if cfg.max_trans_norm:
-                        ref_intrinsics = make_intrinsics(traj[:, :-1, -2:], width, height).cpu().tolist()
-                        pred_intrinsics = make_intrinsics(traj_pred[:, :-1, -2:], width, height).cpu().tolist()
+                        ref_intrinsics = make_intrinsics(traj[:, :-1, -2:], width, height, intrinsics).cpu().tolist()
+                        pred_intrinsics = make_intrinsics(traj_pred[:, :-1, -2:], width, height, intrinsics).cpu().tolist()
                     else:
-                        ref_intrinsics = make_intrinsics(traj[:, :, -2:], width, height).cpu().tolist()
-                        pred_intrinsics = make_intrinsics(traj_pred[:, :, -2:], width, height).cpu().tolist()
+                        ref_intrinsics = make_intrinsics(traj[:, :, -2:], width, height, intrinsics).cpu().tolist()
+                        pred_intrinsics = make_intrinsics(traj_pred[:, :, -2:], width, height, intrinsics).cpu().tolist()
                     width = width.cpu().tolist()
                     height = height.tolist()
                     

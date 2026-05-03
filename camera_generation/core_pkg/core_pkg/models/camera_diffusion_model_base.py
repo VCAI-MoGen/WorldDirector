@@ -148,7 +148,7 @@ class CameraDiffusionModel(nn.Module):
         t_embed = self.time_proj(t_embed)
         
         text_tok = self.text_proj(text_emb)
-        text_tok = positional_encoding(text_tok.shape[-2], text_tok.shape[-1], device=device).unsqueeze(0).expand(B, -1, -1)
+        text_tok = text_tok + positional_encoding(text_tok.shape[-2], text_tok.shape[-1], device=device).unsqueeze(0).expand(B, -1, -1)
 
         if has_point:
             point_tok = self.point_proj(point_emb)

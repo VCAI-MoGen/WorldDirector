@@ -312,12 +312,23 @@ class CamDataset(torch.utils.data.Dataset):
         normalized_intrinsics = torch.cat([normalized_fx, normalized_fy], dim=-1).to(torch.float32)
         normalized_intrinsics = normalized_intrinsics / normalized_intrinsics[0:1, :]
 
+
+        # VLA
+        # normalized_extrinsics = normalized_extrinsics[1:]
+        # e0_inv = torch.linalg.inv(normalized_extrinsics[0].float())
+        # normalized_extrinsics = normalized_extrinsics @ e0_inv.unsqueeze(0)
+
+        # normalized_intrinsics = normalized_intrinsics[1:]
+        # normalized_intrinsics = normalized_intrinsics / normalized_intrinsics[0:1, :]
+
+        ##### VLA
+
         cam_param = torch.cat([normalized_extrinsics[:, :3, 0], normalized_extrinsics[:, :3, 1], normalized_extrinsics[:, :3, 3], normalized_intrinsics], dim=-1).to(torch.float32) # (N_cam, 11)
         first_extrinsic = extrinsics[0]
-        if max_trans_norm:
-            # scale_factor_feat = F.pad(torch.log(scale_factor + 1e-8), (0, cam_param.shape[-1] - 1)).unsqueeze(0)
-            scale_factor_feat = F.pad(scale_factor, (0, cam_param.shape[-1] - 1)).unsqueeze(0)
-            cam_param = torch.cat([cam_param, scale_factor_feat], dim=0)
+        # if max_trans_norm:
+        #     # scale_factor_feat = F.pad(torch.log(scale_factor + 1e-8), (0, cam_param.shape[-1] - 1)).unsqueeze(0)
+        #     scale_factor_feat = F.pad(scale_factor, (0, cam_param.shape[-1] - 1)).unsqueeze(0)
+        #     cam_param = torch.cat([cam_param, scale_factor_feat], dim=0)
 
         data = {
             'data_name': data_name,

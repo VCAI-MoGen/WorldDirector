@@ -237,8 +237,7 @@ def train():
                 pred_intrinsics = make_intrinsics(traj_pred[:, :, -2:], width, height, intrinsics).cpu().tolist()
             width = width.cpu().tolist()
             height = height.tolist()
-
-            scale = torch.ones_like(scale).to(scale)
+            
             traj = out_to_trajectory(traj, scale, E0, device)
             traj_pred = out_to_trajectory(traj_pred, scale, E0, device)
             matrix_traj_ref = inverse_camera_matrix(traj)

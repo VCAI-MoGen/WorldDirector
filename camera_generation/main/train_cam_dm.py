@@ -170,26 +170,43 @@ def train():
                     if 'pc' in data:
                         point = data['pc']
                         if cfg.point_encoder != 'custom':
-                            pc_embeds, ray_sims, pc_masks, point_obj = pc_encoder(point)
+                            pc_embeds, pc_masks, point_obj = pc_encoder(point)
                     elif 'pc_embeds' in data:
                         pc_embeds = data['pc_embeds'].to(device)
                         pc_masks = data['pc_masks'].to(device)
                     t3 = time.time()
-                    # PC Embeds preprocessing
-                    # # print(data_name)
-                    # data_path = os.path.join(trainer.batch_generator.dataset.dataset_path, data_name[0])
-                    # # pc_feat_path = os.path.join(data_path, 'pc_embeds.pt')
-                    # pc_decoded_feat_path = os.path.join(data_path, 'pc_embeds_decoded.pt')
-                    # pc_feat = pc_embeds[0][pc_masks[0]]
-                    # torch.save(pc_feat, pc_decoded_feat_path)
-                    # # print(pc_masks[0].sum())
-                    # # print(pc_embeds.shape)
-                    # # input()
-
-                    # # decoded_feat, point_obj[0] = pc_encoder.decode(point_obj, num_iter=1)
-                    # # print(decoded_feat.shape)
-                    
-                    # # torch.save(decoded_feat, pc_decoded_feat_path)
+                    # target_dir = '/home/ckd248/data/SCVideo/camera_generation/dataset/pc_embeds_datadop'
+                    # for name, embed, points_mask in zip(data_name, pc_embeds, pc_masks):
+                    #     file_path = os.path.join(target_dir, name)
+                    #     valid_mask = points_mask > 0
+                    #     # print(data_name[0])
+                    #     # print(embed[valid_mask].shape)
+                    #     # print(sim[valid_mask].shape)
+                    #     # print(p2v_map.shape)
+                    #     # print(inv.shape)
+                    #     # print(points_single.shape)
+                    #     # print(scatter_mean(points[0], inv, dim=0).shape)
+                    #     # torch.save(torch.cat([points_single.cpu(), torch.ones(points_single.shape[0], 3)], dim=1), 'example_scene.pt')
+                    #     # input()
+                    #     # print(p2v_map[inv].shape)
+                    #     # print(points_mask.shape)
+                    #     # print(points_mask.sum())
+                    #     # print(points_single.shape)
+                    #     # print(p2v_map[inv].max())
+                    #     # print(embed[valid_mask].shape)
+                    #     # input()
+                    #     # p2v_map = p2v_map[inv]
+                    #     # voxel_coord = scatter_mean(points_single, p2v_map, dim=0) # (V, 3)
+                    #     # print(voxel_coord.shape)
+                    #     embed_combined = embed[valid_mask] # (V, D)
+                    #     # embed_combined = torch.cat([voxel_coord, embed_combined], dim=-1)
+                    #     embed_data = {
+                    #         "embed": embed_combined.cpu(),
+                    #         # "sim": sim[valid_mask].cpu(),
+                    #         # "p2v_map": p2v_map.cpu(),
+                    #         "mask": points_mask.cpu()
+                    #     }
+                    #     torch.save(embed_data, file_path)
                     # continue
                 else:
                     pc_embeds, pc_masks = None, None
@@ -269,6 +286,7 @@ def train():
                     scale = data['avg_scale'].to(device)
                     width = data['width'].to(device)
                     height = data['height'].to(device)
+                    intrinsics = data['intrinsics'].to(device)
 
                     B = traj.shape[0]
 
@@ -309,8 +327,8 @@ def train():
                     total_loss_traj += val_loss_traj * B
                     total_samples += B
 
-                    ref_intrinsics = make_intrinsics(traj[:, :, -2:], width, height).cpu().tolist()
-                    pred_intrinsics = make_intrinsics(traj_pred[:, :, -2:], width, height).cpu().tolist()
+                    ref_intrinsics = make_intrinsics(traj[:, :, -2:], width, height, intrinsics).cpu().tolist()
+                    pred_intrinsics = make_intrinsics(traj_pred[:, :, -2:], width, height, intrinsics).cpu().tolist()
                     width = width.cpu().tolist()
                     height = height.tolist()
 

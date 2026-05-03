@@ -50,7 +50,7 @@ class CameraEncoder(nn.Module):
 
     def forward(self, x):
         """
-        x: (B, T, 9)
+        x: (B, T, 11)
         return:
             mu, logvar: (B, D, T')
         """
@@ -140,6 +140,12 @@ class CameraVAE(nn.Module):
         mu, logvar = self.encoder(x)
         mu = mu.transpose(1, 2)
         return mu
+    
+    def encode_sample(self, x):
+        mu, logvar = self.encoder(x)        # (B, D, T')
+        z = self.reparameterize(mu, logvar)
+        z = z.transpose(1, 2)
+        return z
 
     def decode(self, z):
         z = z.transpose(1, 2)
