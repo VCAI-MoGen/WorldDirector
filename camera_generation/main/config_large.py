@@ -20,6 +20,8 @@ def build_dataset_dir_list():
     dp_dataset_dir_list = [os.path.join(dynpose_data_path, scene_type) for scene_type in sorted(os.listdir(dynpose_data_path))]
     dataset_dir_list += dp_dataset_dir_list
 
+    # TartanAir / ARKitScenes / ScanNet are evaluated on reconstructed worlds
+
     # datadop_dir_list = ['/home/ckd248/data/SCVideo/camera_generation/tools/GenDoP/DataDoP/ours']
     # dataset_dir_list += datadop_dir_list
 
